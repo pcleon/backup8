@@ -1,0 +1,13 @@
+fastapi>=0.110.0
+uvicorn>=0.28.0
+SQLAlchemy>=2.0.28
+aiomysql>=0.2.0
+pymysql>=1.1.0
+asyncssh>=2.14.2
+paramiko>=3.4.0
+APScheduler>=3.10.4
+python-dotenv>=1.0.1
+pydantic>=2.6.4
+pydantic-settings>=2.2.1
+cryptography>=42.0.5
+alembic>=1.13.1

@@ -7,6 +7,7 @@
 
 import asyncio
 import os
+from datetime import datetime
 import asyncssh
 from contextlib import asynccontextmanager
 from typing import List, Optional
@@ -18,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backup_executor import run_backup
 from config import settings
-from database import async_engine, Base, get_db
+from database import async_engine, Base, get_db, AsyncSessionLocal
 from models import HostConfig, BackupRecord
 from scheduler import backup_scheduler
 import schemas
@@ -35,13 +36,31 @@ async def lifespan(app: FastAPI):
     logger.info("正在启动服务...")
     logger.info("请确保在启动服务前已运行 'alembic upgrade head' 以完成数据库迁移和结构同步。")
 
-    # 1. 定时作业同步并启动调度器
+    # 1. 自动清理状态为 running 的异常残留备份任务
+    try:
+        async with AsyncSessionLocal() as session:
+            stmt = select(BackupRecord).where(BackupRecord.status == "running")
+            res = await session.execute(stmt)
+            running_records = res.scalars().all()
+            if running_records:
+                logger.info(f"检测到有 {len(running_records)} 个未完成的残留备份任务处于运行状态，正在进行清理...")
+                for rec in running_records:
+                    rec.status = "failed"
+                    rec.progress_status = "FAILED"
+                    rec.end_time = datetime.now()
+                    rec.error_message = "备份服务意外重启或中断，导致任务被系统自动中止清理。"
+                await session.commit()
+                logger.info("异常残留备份任务清理完毕。")
+    except Exception as cleanup_ex:
+        logger.error(f"启动时清理残留备份任务失败: {str(cleanup_ex)}")
+
+    # 2. 定时作业同步并启动调度器
     await backup_scheduler.sync_jobs_from_db()
     backup_scheduler.start()
     
     yield
     
-    # 2. 关闭调度器
+    # 3. 关闭调度器
     backup_scheduler.shutdown()
     logger.info("服务已安全关闭。")
 
@@ -395,6 +414,50 @@ async def trigger_manual_backup(host_id: int, db: AsyncSession = Depends(get_db)
     asyncio.create_task(run_backup(host_id))
     
     return {"status": "triggered", "detail": f"主机 '{host.host_name}' 备份任务已成功下发并后台运行。"}
+
+
+@app.post("/api/hosts/{host_id}/records/{record_id}/abort", summary="手动中止或重置运行中的备份记录")
+async def abort_backup_record(host_id: int, record_id: int, db: AsyncSession = Depends(get_db)):
+    """手动中止指定主机的备份历史记录，并将状态标记为失败。
+
+    Args:
+        host_id (int): 关联的主机 ID。
+        record_id (int): 备份记录 ID。
+        db (AsyncSession): 数据库 Session。
+
+    Returns:
+        dict: 执行结果状态。
+
+    Raises:
+        HTTPException: 当记录不存在或已经结束时抛出。
+    """
+    stmt = (
+        select(BackupRecord)
+        .where(BackupRecord.id == record_id)
+        .where(BackupRecord.host_id == host_id)
+    )
+    res = await db.execute(stmt)
+    record = res.scalar_one_or_none()
+
+    if not record:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="未找到对应的备份记录"
+        )
+
+    if record.status != "running":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="该备份任务已结束，无法中止"
+        )
+
+    record.status = "failed"
+    record.progress_status = "ABORTED"
+    record.end_time = datetime.now()
+    record.error_message = "备份任务已被管理员手动中止"
+
+    await db.commit()
+    return {"status": "success", "detail": f"备份记录 {record_id} 已手动中止。"}
 
 
 # =====================================================================

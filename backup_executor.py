@@ -107,11 +107,11 @@ async def _poll_clone_progress(
 
 
 async def _verify_zabbix_role(ip: str, host_name: str) -> None:
-    """在备份执行前，从该主机前缀关联的 Zabbix 库校验其角色权限。
+    """在备份执行前，从该主机前缀关联 of Zabbix 库校验其角色权限。
 
     根据 host_name.split('-')[0] 获取机房前缀，再匹配 Zabbix DB 连接串。
     获取其在 hosts 表中的 name 字段，提取尾部的 role（如 -L），
-    仅当 role 在 ["L", "T", "Y"] 时允许备份，否则拒绝并抛出异常。
+    仅当 role 在允许的角色列表中时允许备份，否则拒绝并抛出异常。
 
     Args:
         ip (str): 目标主机 IP。
@@ -120,9 +120,12 @@ async def _verify_zabbix_role(ip: str, host_name: str) -> None:
     Raises:
         RuntimeError: 当校验失败时抛出。
     """
-    if not settings.zabbix_db_urls_dict:
-        logger.info("未配置任何 Zabbix 数据库连接映射，跳过主机角色门禁校验。")
+    if not settings.enable_zabbix_check:
+        logger.info("Zabbix 角色门禁校验已关闭 (ENABLE_ZABBIX_CHECK=False)，自动放行备份流程。")
         return
+
+    if not settings.zabbix_db_urls_dict:
+        raise RuntimeError("已启用 Zabbix 角色校验门禁，但在环境变量中未配置任何 ZABBIX_DB_URLS 连接字典。")
 
     prefix = host_name.split("-")[0].strip()
     db_url = settings.zabbix_db_urls_dict.get(prefix)
@@ -131,8 +134,10 @@ async def _verify_zabbix_role(ip: str, host_name: str) -> None:
 
     logger.info(f"开始通过机房前缀 {prefix} 的 Zabbix 数据库校验 IP {ip} 的角色权限...")
 
-    # 异步建立目标 Zabbix 库的连接引擎
-    engine = create_async_engine(db_url, echo=False)
+    # 异步建立目标 Zabbix 库的连接引擎，配置5秒连接超时防止网络不可达时无限卡死
+    connect_args = {"connect_timeout": 5}
+
+    engine = create_async_engine(db_url, echo=False, connect_args=connect_args)
     try:
         async with engine.connect() as conn:
             # 用户要求的 SQL 结构：
@@ -150,7 +155,10 @@ async def _verify_zabbix_role(ip: str, host_name: str) -> None:
             # 用户逻辑: name.split('-')[-1]
             role = zabbix_name.split("-")[-1].strip()
 
-            allowed_roles = ["L", "T", "Y"]
+            allowed_roles = settings.zabbix_allowed_roles_list
+            if not allowed_roles:
+                raise RuntimeError("Zabbix 允许的角色列表配置为空，出于安全考量拦截所有主机备份。")
+
             if role not in allowed_roles:
                 raise RuntimeError(
                     f"主机 Zabbix 角色校验拒绝。当前主机在 Zabbix 中的名称为 '{zabbix_name}'，"
@@ -179,8 +187,8 @@ async def run_backup(host_id: int) -> bool:
         stmt = select(HostConfig).where(HostConfig.id == host_id)
         result = await session.execute(stmt)
         host: Optional[HostConfig] = result.scalar_one_or_none()
-        if not host or not host.is_active:
-            logger.warning(f"主机 ID {host_id} 未激活或不存在，拒绝执行备份。")
+        if not host:
+            logger.warning(f"主机 ID {host_id} 不存在，拒绝执行备份。")
             return False
 
         # 创建初始的 BackupRecord，标记为 running 状态
@@ -219,8 +227,8 @@ async def run_backup(host_id: int) -> bool:
     # 本地路径定义
     backup_dir = settings.global_backup_dir.rstrip("/")
     nfs_dir = settings.global_nfs_dir.rstrip("/")
-    local_log_file = f"{backup_dir}/backup.log"
     timestamp = datetime.now().strftime("%Y%m%d%H%M")
+    local_log_file = f"{backup_dir}/backup_{timestamp}.log"
     
     # 临时克隆目录与打包名定义
     temp_clone_dir = f"{backup_dir}/temp_clone_{timestamp}"
@@ -239,6 +247,9 @@ async def run_backup(host_id: int) -> bool:
             "port": ssh_port,
             "username": settings.global_ssh_user,
             "known_hosts": None,
+            "connect_timeout": 15,                     # 建立连接握手超时为 15 秒
+            "keepalive_interval": 10,          # 每隔 10 秒发送一次 Keepalive 探测
+            "keepalive_count_max": 3,          # 连续 3 次无心跳回应则断开连接
         }
         if os.path.exists(settings.global_ssh_key_path):
             connect_kwargs["client_keys"] = [settings.global_ssh_key_path]

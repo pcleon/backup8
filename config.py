@@ -94,6 +94,22 @@ class Settings(BaseSettings):
         except Exception:
             return {}
 
+    # 是否开启 Zabbix 角色门禁检验
+    enable_zabbix_check: bool = False
+    # 允许执行备份的 Zabbix 主机角色列表 (以逗号分隔，如 L,T,Y)
+    zabbix_allowed_roles: str = "L,T,Y"
+
+    @property
+    def zabbix_allowed_roles_list(self) -> list:
+        """安全获取 Zabbix 允许的角色列表。
+
+        Returns:
+            list: 允许的角色字符串列表。
+        """
+        if not self.zabbix_allowed_roles:
+            return []
+        return [r.strip() for r in self.zabbix_allowed_roles.split(",") if r.strip()]
+
     # 配置文件读取选项
     model_config = SettingsConfigDict(
         env_file=".env",

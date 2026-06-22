@@ -43,6 +43,7 @@ interface HostCardProps {
   onEdit: (host: any) => void;
   onDelete: (id: number) => Promise<void>;
   onRefreshData: () => void;
+  viewMode?: "grid" | "table";
 }
 
 export const HostCard: React.FC<HostCardProps> = ({
@@ -50,10 +51,12 @@ export const HostCard: React.FC<HostCardProps> = ({
   onEdit,
   onDelete,
   onRefreshData,
+  viewMode = "grid"
 }) => {
   const [isBackingUp, setIsBackingUp] = useState(false);
   const [currentProgress, setCurrentProgress] = useState<string | undefined>(undefined);
   const [latestRecord, setLatestRecord] = useState<BackupRecord | undefined>(host.latest_record);
+  const [isAborting, setIsAborting] = useState(false);
   
   // 弹窗状态管理
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
@@ -127,7 +130,7 @@ export const HostCard: React.FC<HostCardProps> = ({
         if (isDone) {
           clearInterval(intervalId);
         }
-      }, 2000);
+      }, 10000);
     } else {
       setIsBackingUp(false);
     }
@@ -159,11 +162,38 @@ export const HostCard: React.FC<HostCardProps> = ({
         if (isDone) {
           clearInterval(intervalId);
         }
-      }, 2000);
+      }, 10000);
     } catch (err: any) {
       alert(err.message);
       setIsBackingUp(false);
       setCurrentProgress(undefined);
+    }
+  };
+
+  // 手动中止备份任务
+  const handleAbortBackup = async () => {
+    if (isAborting) return;
+    if (!latestRecord?.id) return;
+    if (!confirm(`确定要强行中止当前主机的备份任务吗？这会将任务标记为失败。`)) return;
+    
+    setIsAborting(true);
+    try {
+      const response = await fetch(`/api/hosts/${host.id}/records/${latestRecord.id}/abort`, {
+        method: "POST"
+      });
+      if (!response.ok) {
+        const errData = await response.json();
+        throw new Error(errData.detail || "强行中止备份任务失败");
+      }
+      
+      // 中止成功，更新本地状态
+      setIsBackingUp(false);
+      setCurrentProgress(undefined);
+      onRefreshData();
+    } catch (err: any) {
+      alert(err.message);
+    } finally {
+      setIsAborting(false);
     }
   };
 
@@ -191,10 +221,263 @@ export const HostCard: React.FC<HostCardProps> = ({
     }
   };
 
+  if (viewMode === "table") {
+    return (
+      <>
+        <tr className="border-b border-slate-200/80 hover:bg-slate-50/50 transition-colors text-sm text-slate-700">
+          {/* 第一列：IDC前缀 + 主机名 */}
+          <td className="py-3 px-4 font-semibold">
+            <div className="flex items-center gap-2">
+              <span className="px-1.5 py-0.5 rounded-md text-[9px] font-bold uppercase tracking-wider bg-blue-50 border border-blue-200 text-blue-600">
+                {host.host_name.split("-")[0] || "IDC"}
+              </span>
+              <span className="truncate max-w-[120px]" title={host.host_name}>{host.host_name}</span>
+            </div>
+          </td>
+          {/* 第二列：IP 与 DB Port */}
+          <td className="py-3 px-4 font-mono text-xs text-slate-600">
+            {host.ip}:{host.db_port}
+          </td>
+          {/* 第三列：自动计划表达式 */}
+          <td className="py-3 px-4">
+            <span className={`px-2 py-0.5 rounded-md text-xs ${
+              host.is_active 
+                ? "bg-indigo-50/80 border border-indigo-100 text-indigo-600 font-mono text-[11px]" 
+                : "bg-slate-100 border border-slate-200 text-slate-400"
+            }`}>
+              {host.is_active ? host.cron_expression : "未启用"}
+            </span>
+          </td>
+          {/* 第四列：最新备份结果（指示灯与进度） */}
+          <td className="py-3 px-4">
+            {isBackingUp ? (
+              <div className="flex flex-col gap-1 w-32">
+                <span className="flex items-center gap-1 text-xs text-blue-600 font-semibold animate-pulse-soft">
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  {currentProgress || "备份中"}
+                </span>
+                <div className="w-full bg-slate-200 rounded-full h-1 overflow-hidden">
+                  <div 
+                    className={`h-full bg-blue-600 rounded-full transition-all duration-500 ${
+                      currentProgress?.includes("STARTING") ? "w-[10%]" : 
+                      currentProgress?.includes("CLEANING") ? "w-[20%]" :
+                      currentProgress?.includes("CLONE") ? "w-[50%]" :
+                      currentProgress?.includes("COMPRESSING") ? "w-[75%]" :
+                      currentProgress?.includes("RSYNCING") ? "w-[90%]" : "w-[95%]"
+                    }`}
+                  />
+                </div>
+              </div>
+            ) : latestRecord?.status === "success" ? (
+              <span className="flex items-center gap-1 text-xs text-emerald-600 font-semibold" title={latestRecord.backup_file}>
+                <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                成功 ({formatBytes(latestRecord.file_size_bytes)})
+              </span>
+            ) : latestRecord?.status === "failed" ? (
+              <div className="flex items-center gap-2">
+                <span className="flex items-center gap-1 text-xs text-red-600 font-semibold truncate max-w-[150px]" title={latestRecord.error_message}>
+                  <XCircle className="w-3.5 h-3.5 shrink-0" />
+                  失败
+                </span>
+                <button 
+                  onClick={() => setActiveErrorDetail(latestRecord.error_message || "")} 
+                  className="text-[10px] text-red-500 hover:text-red-700 underline font-medium shrink-0"
+                >
+                  日志
+                </button>
+              </div>
+            ) : (
+              <span className="text-xs text-slate-400">无备份</span>
+            )}
+          </td>
+          {/* 第五列：上次备份启动时间 */}
+          <td className="py-3 px-4 text-xs text-slate-500 font-mono">
+            {latestRecord ? formatDateTime(latestRecord.start_time).split(" ")[0] : "-"}
+          </td>
+          {/* 第六列：备份耗时 */}
+          <td className="py-3 px-4 text-xs text-slate-500">
+            {latestRecord?.end_time ? formatDuration(latestRecord.start_time, latestRecord.end_time) : "-"}
+          </td>
+          {/* 第七列：操作栏 */}
+          <td className="py-3 px-4 text-right">
+            <div className="flex items-center justify-end gap-1.5">
+              {isBackingUp ? (
+                <button
+                  onClick={handleAbortBackup}
+                  disabled={isAborting}
+                  className="px-2.5 py-1.5 rounded-lg text-xs font-semibold text-white bg-red-600 hover:bg-red-500 disabled:bg-red-600/50 disabled:cursor-not-allowed transition flex items-center gap-1"
+                >
+                  {isAborting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <XCircle className="w-3.5 h-3.5" />}
+                  中止
+                </button>
+              ) : (
+                <button
+                  onClick={handleTriggerBackup}
+                  className="px-2.5 py-1.5 rounded-lg text-xs font-semibold text-white bg-blue-600 hover:bg-blue-500 transition flex items-center gap-1"
+                >
+                  <Play className="w-3.5 h-3.5 fill-current" />
+                  备份
+                </button>
+              )}
+              <button
+                onClick={handleViewHistory}
+                className="px-2.5 py-1.5 rounded-lg text-xs text-slate-600 hover:text-slate-800 hover:bg-slate-100 border border-slate-200/85 transition flex items-center gap-0.5"
+              >
+                <History className="w-3 h-3 text-slate-500" />
+                历史
+              </button>
+              <button
+                onClick={() => onEdit(host)}
+                disabled={isBackingUp}
+                className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-400 hover:text-slate-700 transition disabled:opacity-30"
+                title="编辑配置"
+              >
+                <Edit3 className="w-3.5 h-3.5" />
+              </button>
+              <button
+                onClick={handleDelete}
+                disabled={isBackingUp}
+                className="p-1.5 rounded-lg hover:bg-red-50/60 text-slate-400 hover:text-red-600 transition disabled:opacity-30"
+                title="删除主机"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          </td>
+        </tr>
+
+        {/* 弹窗一：历史备份记录明细列表 */}
+        {isHistoryOpen && (
+          <div 
+            onClick={() => setIsHistoryOpen(false)}
+            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-xs"
+          >
+            <div 
+              onClick={(e) => e.stopPropagation()}
+              className="w-full max-w-4xl glass-panel rounded-2xl overflow-hidden shadow-2xl border border-slate-200/50 flex flex-col max-h-[85vh]"
+            >
+              <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 bg-slate-50/50">
+                <div className="flex items-center gap-2 text-slate-800 font-semibold">
+                  <History className="w-5 h-5 text-blue-600" />
+                  <span>主机【{host.host_name}】备份历史记录 (最近20次)</span>
+                </div>
+                <button
+                  onClick={() => setIsHistoryOpen(false)}
+                  className="p-1 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <div className="p-6 overflow-y-auto flex-1 bg-white">
+                {isLoadingHistory ? (
+                  <div className="flex items-center justify-center py-20 text-slate-500 gap-2">
+                    <Loader2 className="w-5 h-5 animate-spin text-blue-600" />
+                    <span>加载历史记录中...</span>
+                  </div>
+                ) : historyRecords.length === 0 ? (
+                  <div className="text-center py-20 text-slate-400">
+                    暂无任何备份记录。
+                  </div>
+                ) : (
+                  <table className="w-full border-collapse text-left text-sm text-slate-700">
+                    <thead>
+                      <tr className="border-b border-slate-100 text-xs text-slate-500 uppercase bg-slate-50">
+                        <th className="py-2.5 px-3">ID</th>
+                        <th className="py-2.5 px-3">备份状态</th>
+                        <th className="py-2.5 px-3">备份包文件名</th>
+                        <th className="py-2.5 px-3">包大小</th>
+                        <th className="py-2.5 px-3">开始时间</th>
+                        <th className="py-2.5 px-3">备份耗时</th>
+                        <th className="py-2.5 px-3 text-right">操作</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {historyRecords.map((rec) => (
+                        <tr key={rec.id} className="border-b border-slate-100 hover:bg-slate-50/50 transition">
+                          <td className="py-3 px-3 font-mono text-xs text-slate-500">{rec.id}</td>
+                          <td className="py-3 px-3">
+                            {rec.status === "success" ? (
+                              <span className="inline-flex items-center gap-1 text-emerald-600 text-xs font-semibold">
+                                <CheckCircle2 className="w-3 h-3" />
+                                成功
+                              </span>
+                            ) : rec.status === "failed" ? (
+                              <span className="inline-flex items-center gap-1 text-red-600 text-xs font-semibold">
+                                <XCircle className="w-3 h-3" />
+                                失败
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 text-blue-600 text-xs font-semibold animate-pulse">
+                                <Loader2 className="w-3 h-3 animate-spin" />
+                                运行中
+                              </span>
+                            )}
+                          </td>
+                          <td className="py-3 px-3 max-w-[220px] truncate font-mono text-xs text-slate-600" title={rec.backup_file}>
+                            {rec.backup_file || "-"}
+                          </td>
+                          <td className="py-3 px-3 text-xs text-slate-600">{formatBytes(rec.file_size_bytes)}</td>
+                          <td className="py-3 px-3 text-xs text-slate-600">{formatDateTime(rec.start_time)}</td>
+                          <td className="py-3 px-3 text-xs text-slate-600">{formatDuration(rec.start_time, rec.end_time)}</td>
+                          <td className="py-3 px-3 text-right">
+                            {rec.error_message && (
+                              <button
+                                onClick={() => setActiveErrorDetail(rec.error_message || "")}
+                                className="px-2 py-1 bg-red-500/10 hover:bg-red-500/20 text-red-600 border border-red-500/20 hover:border-red-500/30 text-xs rounded-md transition font-medium"
+                              >
+                                查看日志
+                              </button>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* 弹窗二：错误日志明细弹窗 */}
+        {activeErrorDetail && (
+          <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
+            <div className="w-full max-w-2xl glass-panel rounded-2xl overflow-hidden shadow-2xl border border-slate-200/50 flex flex-col max-h-[75vh]">
+              <div className="flex items-center justify-between px-6 py-4 border-b border-red-100 bg-red-50/50">
+                <div className="flex items-center gap-2 text-red-600 font-semibold">
+                  <AlertTriangle className="w-5 h-5" />
+                  <span>备份故障详细错误堆栈</span>
+                </div>
+                <button
+                  onClick={() => setActiveErrorDetail(null)}
+                  className="p-1 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+              <div className="p-6 bg-slate-50 overflow-auto flex-1 font-mono text-xs text-red-700 whitespace-pre-wrap leading-relaxed select-text select-all border-b border-slate-100">
+                {activeErrorDetail}
+              </div>
+              <div className="px-6 py-3 border-t border-slate-100 text-right bg-slate-50/50">
+                <button
+                  onClick={() => setActiveErrorDetail(null)}
+                  className="px-4 py-1.5 bg-slate-200 hover:bg-slate-300 text-xs rounded-lg text-slate-700 font-medium transition"
+                >
+                  关闭
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+      </>
+    );
+  }
+
   return (
     <>
       {/* 浅色毛玻璃卡片 */}
-      <div className="glass-card rounded-xl p-5 flex flex-col justify-between h-[280px]">
+      <div className="glass-card rounded-xl p-5 flex flex-col justify-between min-h-[225px] h-fit gap-3">
         {/* 卡片头部 */}
         <div>
           <div className="flex items-start justify-between">
@@ -237,30 +520,30 @@ export const HostCard: React.FC<HostCardProps> = ({
             </div>
           </div>
 
-          {/* 定时配置 & 信息展示 */}
-          <div className="mt-4 space-y-2 text-xs text-slate-600">
-            <div className="flex items-center gap-2">
+          {/* 定时配置 & 信息展示 - 改为横排紧凑流式展示 */}
+          <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs text-slate-600 border-t border-slate-100/60 pt-2.5">
+            <div className="flex items-center gap-1.5">
               <Calendar className="w-3.5 h-3.5 text-slate-400" />
               <span>
-                自动备份计划: 
-                <span className="ml-1.5 font-mono px-1.5 py-0.5 rounded bg-slate-50 border border-slate-200/60 text-slate-700">
+                计划: 
+                <span className="ml-1 font-mono px-1.5 py-0.5 rounded bg-slate-50 border border-slate-200/60 text-slate-700">
                   {host.is_active ? host.cron_expression : "未启用"}
                 </span>
               </span>
             </div>
             {latestRecord && (
               <>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-1.5">
                   <Clock className="w-3.5 h-3.5 text-slate-400" />
-                  <span>上次备份: {formatDateTime(latestRecord.start_time)}</span>
+                  <span>上次: {formatDateTime(latestRecord.start_time)}</span>
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-1.5">
                   <HardDrive className="w-3.5 h-3.5 text-slate-400" />
                   <span>
-                    包大小: {latestRecord.status === "success" ? formatBytes(latestRecord.file_size_bytes) : "-"}
+                    大小: {latestRecord.status === "success" ? formatBytes(latestRecord.file_size_bytes) : "-"}
                     {latestRecord.end_time && (
-                      <span className="ml-2 text-slate-400 font-medium">
-                        (耗时: {formatDuration(latestRecord.start_time, latestRecord.end_time)})
+                      <span className="ml-1 text-slate-400 font-medium">
+                        ({formatDuration(latestRecord.start_time, latestRecord.end_time)})
                       </span>
                     )}
                   </span>
@@ -338,31 +621,38 @@ export const HostCard: React.FC<HostCardProps> = ({
               <History className="w-3.5 h-3.5 text-slate-500" />
               历史
             </button>
-            <button
-              onClick={handleTriggerBackup}
-              disabled={isBackingUp}
-              className="px-3 py-1.5 rounded text-xs text-white bg-blue-600 hover:bg-blue-500 disabled:bg-blue-600/35 disabled:text-blue-200/50 disabled:cursor-not-allowed font-medium shadow-md shadow-blue-500/10 hover:shadow-blue-500/20 transition flex items-center gap-1"
-            >
-              {isBackingUp ? (
-                <>
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                  运行中
-                </>
-              ) : (
-                <>
-                  <Play className="w-3.5 h-3.5 fill-current" />
-                  立即备份
-                </>
-              )}
-            </button>
+            {isBackingUp ? (
+              <button
+                onClick={handleAbortBackup}
+                disabled={isAborting}
+                className="px-3 py-1.5 rounded text-xs text-white bg-red-600 hover:bg-red-500 disabled:bg-red-600/50 disabled:cursor-not-allowed font-medium shadow-md shadow-red-500/10 hover:shadow-red-500/20 transition flex items-center gap-1"
+              >
+                {isAborting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <XCircle className="w-3.5 h-3.5" />}
+                中止备份
+              </button>
+            ) : (
+              <button
+                onClick={handleTriggerBackup}
+                className="px-3 py-1.5 rounded text-xs text-white bg-blue-600 hover:bg-blue-500 font-medium shadow-md shadow-blue-500/10 hover:shadow-blue-500/20 transition flex items-center gap-1"
+              >
+                <Play className="w-3.5 h-3.5 fill-current" />
+                立即备份
+              </button>
+            )}
           </div>
         </div>
       </div>
 
       {/* 弹窗一：历史备份记录明细列表 */}
       {isHistoryOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-xs">
-          <div className="w-full max-w-4xl glass-panel rounded-2xl overflow-hidden shadow-2xl border border-slate-200/50 flex flex-col max-h-[85vh]">
+        <div 
+          onClick={() => setIsHistoryOpen(false)}
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-xs"
+        >
+          <div 
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-4xl glass-panel rounded-2xl overflow-hidden shadow-2xl border border-slate-200/50 flex flex-col max-h-[85vh]"
+          >
             <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 bg-slate-50/50">
               <div className="flex items-center gap-2 text-slate-800 font-semibold">
                 <History className="w-5 h-5 text-blue-600" />
@@ -463,7 +753,7 @@ export const HostCard: React.FC<HostCardProps> = ({
                 <X className="w-5 h-5" />
               </button>
             </div>
-            <div className="p-6 bg-slate-50 overflow-auto flex-1 font-mono text-xs text-red-700 whitespace-pre leading-relaxed select-text select-all no-scrollbar border-b border-slate-100">
+            <div className="p-6 bg-slate-50 overflow-auto flex-1 font-mono text-xs text-red-700 whitespace-pre-wrap leading-relaxed select-text select-all border-b border-slate-100">
               {activeErrorDetail}
             </div>
             <div className="px-6 py-3 border-t border-slate-100 text-right bg-slate-50/50">

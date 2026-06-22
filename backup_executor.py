@@ -13,12 +13,13 @@ import traceback
 from datetime import datetime
 from typing import Optional, Tuple
 import asyncssh
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, text
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from config import settings
 from database import AsyncSessionLocal
 from models import BackupRecord, HostConfig
+from notifier import send_alarm
 
 # 初始化日志记录器
 logger = logging.getLogger("backup_executor")
@@ -105,6 +106,65 @@ async def _poll_clone_progress(
     logger.info(f"[Record {record_id}] 停止 MySQL Clone 进度监控。")
 
 
+async def _verify_zabbix_role(ip: str, host_name: str) -> None:
+    """在备份执行前，从该主机前缀关联的 Zabbix 库校验其角色权限。
+
+    根据 host_name.split('-')[0] 获取机房前缀，再匹配 Zabbix DB 连接串。
+    获取其在 hosts 表中的 name 字段，提取尾部的 role（如 -L），
+    仅当 role 在 ["L", "T", "Y"] 时允许备份，否则拒绝并抛出异常。
+
+    Args:
+        ip (str): 目标主机 IP。
+        host_name (str): 主机别名（hostname）。
+
+    Raises:
+        RuntimeError: 当校验失败时抛出。
+    """
+    if not settings.zabbix_db_urls_dict:
+        logger.info("未配置任何 Zabbix 数据库连接映射，跳过主机角色门禁校验。")
+        return
+
+    prefix = host_name.split("-")[0].strip()
+    db_url = settings.zabbix_db_urls_dict.get(prefix)
+    if not db_url:
+        raise RuntimeError(f"未在 Zabbix 连接配置中找到该机房前缀 '{prefix}' 对应的数据库地址")
+
+    logger.info(f"开始通过机房前缀 {prefix} 的 Zabbix 数据库校验 IP {ip} 的角色权限...")
+
+    # 异步建立目标 Zabbix 库的连接引擎
+    engine = create_async_engine(db_url, echo=False)
+    try:
+        async with engine.connect() as conn:
+            # 用户要求的 SQL 结构：
+            # select name from hosts where hostid=(select hostid from interface where ip = %s)
+            sql = text(
+                "SELECT name FROM hosts WHERE hostid = (SELECT hostid FROM interface WHERE ip = :ip LIMIT 1)"
+            )
+            res = await conn.execute(sql, {"ip": ip})
+            row = res.fetchone()
+
+            if not row or not row[0]:
+                raise RuntimeError(f"在 Zabbix 数据库中未找到 IP {ip} 对应的主机记录")
+
+            zabbix_name = row[0]
+            # 用户逻辑: name.split('-')[-1]
+            role = zabbix_name.split("-")[-1].strip()
+
+            allowed_roles = ["L", "T", "Y"]
+            if role not in allowed_roles:
+                raise RuntimeError(
+                    f"主机 Zabbix 角色校验拒绝。当前主机在 Zabbix 中的名称为 '{zabbix_name}'，"
+                    f"解析角色为 '{role}'，不在允许的备份角色列表 {allowed_roles} 中。"
+                )
+
+            logger.info(f"主机 Zabbix 角色校验通过：主机 {zabbix_name}，角色 {role} 允许备份。")
+    except Exception as ex:
+        logger.error(f"连接 Zabbix 校验角色时发生错误: {str(ex)}")
+        raise RuntimeError(f"Zabbix 角色检验失败: {str(ex)}")
+    finally:
+        await engine.dispose()
+
+
 async def run_backup(host_id: int) -> bool:
     """针对单台主机执行完整的备份流程。
 
@@ -142,11 +202,25 @@ async def run_backup(host_id: int) -> bool:
 
     logger.info(f"[Host {host_name} ({ip})] 备份任务 {record_id} 开始。")
 
+    # 执行 Zabbix 主机备份角色门禁校验
+    try:
+        async with AsyncSessionLocal() as session:
+            stmt = select(BackupRecord).where(BackupRecord.id == record_id)
+            res = await session.execute(stmt)
+            rec = res.scalar_one_or_none()
+            if rec:
+                rec.progress_status = "VERIFYING_ZABBIX_ROLE"
+                await session.commit()
+
+        await _verify_zabbix_role(ip, host_name)
+    except Exception as gate_ex:
+        raise RuntimeError(f"Zabbix 备份门禁拦截: {str(gate_ex)}")
+
     # 本地路径定义
     backup_dir = settings.global_backup_dir.rstrip("/")
     nfs_dir = settings.global_nfs_dir.rstrip("/")
     local_log_file = f"{backup_dir}/backup.log"
-    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    timestamp = datetime.now().strftime("%Y%m%d%H%M")
     
     # 临时克隆目录与打包名定义
     temp_clone_dir = f"{backup_dir}/temp_clone_{timestamp}"
@@ -235,7 +309,7 @@ async def run_backup(host_id: int) -> bool:
                 for backup_file in local_backups:
                     # 提取文件名中的 md5，并校验 NFS 中是否存在相同大小和 md5 的文件
                     # 文件命名: {ip}_{host_name}_full_{timestamp}.{md5}.tar.gz
-                    match = re.search(r"_full_\d{14}\.([a-f0-9]{32})\.tar\.gz", backup_file)
+                    match = re.search(r"_full_\d{12,14}\.([a-f0-9]{32})\.tar\.gz", backup_file)
                     if not match:
                         continue
                     expected_md5 = match.group(1)
@@ -419,6 +493,13 @@ async def run_backup(host_id: int) -> bool:
                 rec.end_time = datetime.now()
                 rec.error_message = error_msg
                 await session.commit()
+
+        # 触发即时报警发送，在后台独立协程运行，捕获异常以防阻碍后续的清理流程
+        if settings.alarm_script_path:
+            title = f"MySQL 备份失败告警: 主机 {host_name}"
+            brief_error = str(e).split("\n")[0]
+            content = f"主机 IP: {ip}\n主机别名: {host_name}\n错误描述: {brief_error}\n\n详细故障堆栈:\n{error_msg}"
+            asyncio.create_task(send_alarm(ip=ip, title=title, content=content))
 
         # 10. 故障本地垃圾清理 (On-Failure Cleanup)
         if conn:

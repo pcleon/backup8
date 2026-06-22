@@ -5,14 +5,15 @@
 """
 
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List
 from pydantic import BaseModel, ConfigDict, Field
+# ... (其余类保持不变)
 
 
 class HostConfigBase(BaseModel):
     """主机配置基础模式。"""
 
-    host_name: str = Field(..., max_length=100, description="主机别名")
+    host_name: Optional[str] = Field(None, max_length=100, description="主机别名")
     ip: str = Field(..., max_length=50, description="目标主机 IP 地址")
     ssh_port: int = Field(22, ge=1, le=65535, description="SSH 连接端口")
     db_port: int = Field(3306, ge=1, le=65535, description="数据库克隆端口")
@@ -64,3 +65,14 @@ class HostConfigResponse(HostConfigBase):
     latest_record: Optional[BackupRecordResponse] = None
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class HostConfigBatchCreate(BaseModel):
+    """批量创建主机配置时的输入模式。"""
+
+    ips: List[str] = Field(..., description="目标主机 IP 列表")
+    ssh_port: int = Field(22, ge=1, le=65535, description="SSH 连接端口")
+    db_port: int = Field(3306, ge=1, le=65535, description="数据库克隆端口")
+    cron_expression: str = Field("0 2 * * *", max_length=100, description="备份触发 Cron 表达式")
+    is_active: bool = Field(True, description="是否启用自动备份任务")
+

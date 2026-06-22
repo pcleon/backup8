@@ -7,7 +7,7 @@
 
 from datetime import datetime
 from typing import List, Optional
-from sqlalchemy import ForeignKey, String, Integer, Boolean, DateTime, Text
+from sqlalchemy import ForeignKey, String, Integer, Boolean, DateTime, Text, BigInteger
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 
@@ -63,19 +63,19 @@ class BackupRecord(Base):
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="running", index=True, comment="备份状态")
     
     # 实时进度描述：例如 CLONE: FILE COPY (45%) 或 COMPRESSING 或 RSYNCING
-    progress_status: Mapped[Optional[str]] = mapped_column(String(200), nullable=True, comment="当前备份的实时步骤进度")
+    progress_status: Mapped[str] = mapped_column(String(200), nullable=True, comment="当前备份的实时步骤进度")
     
     start_time: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now(), comment="备份开始时间"
     )
-    end_time: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, comment="备份结束时间")
+    end_time: Mapped[datetime] = mapped_column(DateTime, nullable=True, comment="备份结束时间")
     
     # 备份生成的文件名：形如 {ip}_{hostname}_full_{timestamp}.{md5}.tar.gz
-    backup_file: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, comment="最终生成的备份文件名")
-    file_size_bytes: Mapped[Optional[int]] = mapped_column(comment="备份文件大小(字节)")
+    backup_file: Mapped[str] = mapped_column(String(255), nullable=True, comment="最终生成的备份文件名")
+    file_size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=True, comment="备份文件大小(字节)")
     
     # 失败时的具体错误日志或异常信息
-    error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True, comment="故障错误信息")
+    error_message: Mapped[str] = mapped_column(Text, nullable=True, comment="故障错误信息")
     
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now(), comment="日志记录时间"

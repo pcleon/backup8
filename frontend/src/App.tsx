@@ -59,10 +59,12 @@ const App: React.FC = () => {
   }, [fetchHosts]);
 
   // 新增或更新主机配置
-  const handleSaveHost = async (payload: any) => {
+  const handleSaveHost = async (payload: any, isBatch: boolean = false) => {
     const isEdit = !!editingHost;
-    const url = isEdit ? `/api/hosts/${editingHost.id}` : "/api/hosts";
-    const method = isEdit ? "PUT" : "POST";
+    const url = isBatch 
+      ? "/api/hosts/batch" 
+      : (isEdit ? `/api/hosts/${editingHost.id}` : "/api/hosts");
+    const method = isBatch ? "POST" : (isEdit ? "PUT" : "POST");
 
     const response = await fetch(url, {
       method: method,
@@ -72,13 +74,14 @@ const App: React.FC = () => {
       body: JSON.stringify(payload),
     });
 
+    const resData = await response.json();
     if (!response.ok) {
-      const errData = await response.json();
-      throw new Error(errData.detail || "保存主机配置失败。");
+      throw new Error(resData.detail || "保存主机配置失败。");
     }
 
     // 保存成功后重新拉取
     fetchHosts();
+    return resData;
   };
 
   // 删除主机配置

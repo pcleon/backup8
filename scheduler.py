@@ -12,6 +12,7 @@ from apscheduler.triggers.cron import CronTrigger
 from sqlalchemy import select
 
 from backup_executor import run_backup
+from config import settings
 from database import AsyncSessionLocal
 from models import HostConfig
 
@@ -117,6 +118,28 @@ class BackupScheduler:
         else:
             self.remove_host_job(host_id)
 
+    def add_email_report_job(self) -> None:
+        """如果配置了报警脚本路径，注册每日备份异常邮件汇总定时任务。"""
+        if not settings.alarm_script_path:
+            logger.info("未配置邮件报警脚本路径，跳过注册每日备份异常汇总任务。")
+            if self.scheduler.get_job("daily_backup_error_report"):
+                self.scheduler.remove_job("daily_backup_error_report")
+            return
+
+        try:
+            from notifier import send_daily_error_report
+            trigger = CronTrigger.from_crontab(settings.email_send_cron)
+            self.scheduler.add_job(
+                send_daily_error_report,
+                trigger=trigger,
+                id="daily_backup_error_report",
+                name="Daily MySQL backup error report",
+                replace_existing=True,
+            )
+            logger.info(f"成功注册每日备份异常汇总发信任务。Cron: '{settings.email_send_cron}'")
+        except Exception as e:
+            logger.error(f"注册每日备份异常汇总发信定时任务失败: {str(e)}")
+
     async def sync_jobs_from_db(self) -> None:
         """从管理数据库中拉取所有处于活跃状态的主机配置，同步到调度器作业队列中。"""
         logger.info("正在从管理数据库同步备份定时作业...")
@@ -140,6 +163,9 @@ class BackupScheduler:
                     self.remove_host_job(host_id)
                     
         logger.info(f"定时作业同步完成，当前活动定时作业数: {len(self._active_jobs)}")
+        
+        # 挂载可选的每日异常汇总邮件任务
+        self.add_email_report_job()
 
 
 # 全局单例调度管理器对象

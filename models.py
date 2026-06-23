@@ -28,6 +28,8 @@ class HostConfig(Base):
     db_port: Mapped[int] = mapped_column(Integer, nullable=False, default=3306, comment="目标数据库端口")
     cron_expression: Mapped[str] = mapped_column(String(100), nullable=False, default="0 2 * * *", comment="自动备份 Cron 表达式")
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, comment="是否启用定时备份任务")
+    last_heartbeat: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, comment="Agent 最后心跳时间")
+    agent_version: Mapped[Optional[str]] = mapped_column(String(50), nullable=True, comment="Agent 版本号")
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now(), comment="创建时间"
     )
@@ -59,8 +61,8 @@ class BackupRecord(Base):
         Integer, ForeignKey("host_configs.id", ondelete="CASCADE"), nullable=False, index=True, comment="关联主机ID"
     )
     
-    # 状态：running (进行中), success (成功), failed (失败)
-    status: Mapped[str] = mapped_column(String(20), nullable=False, default="running", index=True, comment="备份状态")
+    # 状态：pending (等待下发), running (进行中), success (成功), failed (失败)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending", index=True, comment="备份状态")
     
     # 实时进度描述：例如 CLONE: FILE COPY (45%) 或 COMPRESSING 或 RSYNCING
     progress_status: Mapped[str] = mapped_column(String(200), nullable=True, comment="当前备份的实时步骤进度")

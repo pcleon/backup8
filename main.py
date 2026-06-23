@@ -11,17 +11,17 @@ from datetime import datetime
 import asyncssh
 from contextlib import asynccontextmanager
 from typing import List, Optional
-from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi import FastAPI, Depends, HTTPException, status, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select, func, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backup_executor import run_backup
 from config import settings
 from database import async_engine, Base, get_db, AsyncSessionLocal
 from models import HostConfig, BackupRecord
 from scheduler import backup_scheduler
+from zabbix_checker import verify_zabbix_role
 import schemas
 
 
@@ -138,30 +138,12 @@ async def list_hosts(db: AsyncSession = Depends(get_db)):
 @app.post("/api/hosts", response_model=schemas.HostConfigResponse, summary="新增主机配置")
 async def create_host(host_in: schemas.HostConfigCreate, db: AsyncSession = Depends(get_db)):
     """向管理库添加一台新的目标数据库服务器，自动建立 SSH 预检连接抓取主机名并保存，同时注册定时备份。"""
-    # 1. 异步预检获取目标主机的真实主机名
-    try:
-        connect_kwargs = {
-            "host": host_in.ip,
-            "port": host_in.ssh_port,
-            "username": settings.global_ssh_user,
-            "known_hosts": None,
-        }
-        if os.path.exists(settings.global_ssh_key_path):
-            connect_kwargs["client_keys"] = [settings.global_ssh_key_path]
-        else:
-            raise FileNotFoundError(f"全局 SSH 私钥文件 {settings.global_ssh_key_path} 不存在。")
-            
-        async with asyncssh.connect(**connect_kwargs) as conn:
-            result = await conn.run("hostname")
-            if result.exit_status != 0:
-                raise RuntimeError(result.stderr or "执行 hostname 命令返回异常")
-            fetched_hostname = result.stdout.strip()
-            if not fetched_hostname:
-                raise RuntimeError("主机名返回结果为空")
-    except Exception as e:
+    # 1. 获取目标主机的真实主机名
+    fetched_hostname = host_in.host_name.strip()
+    if not fetched_hostname:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"无法通过 SSH 连接到目标主机验证并获取主机名，请检查 IP、SSH 端口及密钥配置。错误信息: {str(e)}"
+            detail="主机别名不可为空"
         )
 
     # 2. 查重
@@ -170,7 +152,7 @@ async def create_host(host_in: schemas.HostConfigCreate, db: AsyncSession = Depe
     if dup_res.scalar_one_or_none():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"自动获取的主机名 '{fetched_hostname}' 在系统中已存在，请勿重复添加同一主机。"
+            detail=f"主机名 '{fetched_hostname}' 在系统中已存在，请勿重复添加同一主机。"
         )
 
     # 3. 写入主机
@@ -209,29 +191,8 @@ async def batch_create_hosts(batch_in: schemas.HostConfigBatchCreate):
     from database import AsyncSessionLocal
 
     async def _verify_and_create_single_host(ip_addr: str) -> dict:
-        """异步执行单台机器的 SSH 校验与管理库插入逻辑。"""
-        # 1. 建立预检 SSH 连接
-        try:
-            connect_kwargs = {
-                "host": ip_addr,
-                "port": batch_in.ssh_port,
-                "username": settings.global_ssh_user,
-                "known_hosts": None,
-            }
-            if os.path.exists(settings.global_ssh_key_path):
-                connect_kwargs["client_keys"] = [settings.global_ssh_key_path]
-            else:
-                return {"ip": ip_addr, "status": "failed", "reason": "管理机上的全局 SSH 私钥文件不存在"}
-
-            async with asyncssh.connect(**connect_kwargs) as conn:
-                result = await conn.run("hostname")
-                if result.exit_status != 0:
-                    return {"ip": ip_addr, "status": "failed", "reason": f"SSH执行失败: {result.stderr or '未知错误'}"}
-                fetched_hostname = result.stdout.strip()
-                if not fetched_hostname:
-                    return {"ip": ip_addr, "status": "failed", "reason": "目标机 hostname 命令返回空结果"}
-        except Exception as e:
-            return {"ip": ip_addr, "status": "failed", "reason": f"SSH连接异常: {str(e)}"}
+        # 1. 为批量导入的主机生成默认的 hostname
+        fetched_hostname = f"host-{ip_addr.replace('.', '-')}"
 
         # 2. 查重并写入数据库 (使用独立的子 Session，保证并发事务隔离)
         try:
@@ -293,50 +254,18 @@ async def update_host(host_id: int, host_in: schemas.HostConfigUpdate, db: Async
     if not host:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="未找到该主机配置")
 
-    # 检查是否修改了网络配置以决定是否重新抓取 hostname
-    new_ip = host_in.ip
-    new_port = host_in.ssh_port
-    
-    if (new_ip is not None and new_ip != host.ip) or (new_port is not None and new_port != host.ssh_port):
-        check_ip = new_ip if new_ip is not None else host.ip
-        check_port = new_port if new_port is not None else host.ssh_port
-        try:
-            connect_kwargs = {
-                "host": check_ip,
-                "port": check_port,
-                "username": settings.global_ssh_user,
-                "known_hosts": None,
-            }
-            if os.path.exists(settings.global_ssh_key_path):
-                connect_kwargs["client_keys"] = [settings.global_ssh_key_path]
-            
-            async with asyncssh.connect(**connect_kwargs) as conn:
-                result = await conn.run("hostname")
-                if result.exit_status != 0:
-                    raise RuntimeError(result.stderr or "执行 hostname 异常")
-                fetched_hostname = result.stdout.strip()
-                if not fetched_hostname:
-                    raise RuntimeError("主机名为空")
-        except Exception as e:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"更新网络配置失败：无法通过 SSH 连接到新主机地址验证。错误: {str(e)}"
-            )
-
-        # 查重 (排除自己)
-        dup_stmt = select(HostConfig).where(HostConfig.host_name == fetched_hostname).where(HostConfig.id != host_id)
+    # 检查是否有重名的冲突
+    if host_in.host_name and host_in.host_name != host.host_name:
+        dup_stmt = select(HostConfig).where(HostConfig.host_name == host_in.host_name).where(HostConfig.id != host_id)
         dup_res = await db.execute(dup_stmt)
         if dup_res.scalar_one_or_none():
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"目标主机的新主机名 '{fetched_hostname}' 在系统中已存在冲突。"
+                detail=f"目标主机的新主机名 '{host_in.host_name}' 在系统中已存在冲突。"
             )
-        host.host_name = fetched_hostname
 
     # 更新配置数据
     update_data = host_in.model_dump(exclude_unset=True)
-    # host_name 不能由客户端手动传入修改，因为它由 IP 抓取决定
-    update_data.pop("host_name", None)
     
     for field, value in update_data.items():
         setattr(host, field, value)
@@ -410,10 +339,37 @@ async def trigger_manual_backup(host_id: int, db: AsyncSession = Depends(get_db)
             detail="当前该主机已有一个备份任务正在运行中，请勿重复触发！"
         )
 
-    # 3. 异步拉起备份任务并立即返回响应，保证 HTTP 不阻塞
-    asyncio.create_task(run_backup(host_id))
+    # 3. 执行 Zabbix 角色校验，拦截非备库节点
+    try:
+        await verify_zabbix_role(host.ip, host.host_name)
+    except RuntimeError as e:
+        # 如果不符合要求，生成一条失败记录以便前端溯源
+        record = BackupRecord(
+            host_id=host.id,
+            status="failed",
+            progress_status="ZABBIX_ROLE_REJECTED",
+            error_message=str(e),
+            start_time=datetime.now(),
+            end_time=datetime.now()
+        )
+        db.add(record)
+        await db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Zabbix 主备角色验证未通过，拒绝下发任务: {str(e)}"
+        )
+
+    # 4. 生成 pending 状态任务，替代原来的直接 SSH 执行
+    record = BackupRecord(
+        host_id=host.id,
+        status="pending",
+        progress_status="WAITING_FOR_AGENT",
+        start_time=datetime.now()
+    )
+    db.add(record)
+    await db.commit()
     
-    return {"status": "triggered", "detail": f"主机 '{host.host_name}' 备份任务已成功下发并后台运行。"}
+    return {"status": "triggered", "detail": f"主机 '{host.host_name}' 备份任务已成功下发（处于 pending 状态，等待 Agent 拉取）。"}
 
 
 @app.post("/api/hosts/{host_id}/records/{record_id}/abort", summary="手动中止或重置运行中的备份记录")
@@ -458,6 +414,116 @@ async def abort_backup_record(host_id: int, record_id: int, db: AsyncSession = D
 
     await db.commit()
     return {"status": "success", "detail": f"备份记录 {record_id} 已手动中止。"}
+
+
+# =====================================================================
+# Agent (Pull 模式) 通信接口
+# =====================================================================
+
+from encrypt_tool import encrypt_text
+
+@app.get("/api/agent/task", response_model=Optional[schemas.AgentTaskResponse], summary="Agent 轮询获取任务")
+async def agent_get_task(hostname: str, authorization: str = Header(...), db: AsyncSession = Depends(get_db)):
+    """Agent 轮询获取 pending 的备份任务。"""
+    # 1. 验证 Authorization Header
+    if not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Invalid token")
+    token = authorization.split("Bearer ")[1]
+    if token != settings.encryption_key:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+        
+    # 2. 查找主机并更新心跳
+    stmt = select(HostConfig).where(HostConfig.host_name == hostname)
+    host = (await db.execute(stmt)).scalar_one_or_none()
+    if not host:
+        raise HTTPException(status_code=404, detail="Host not found")
+        
+    host.last_heartbeat = datetime.now()
+    await db.commit()
+    
+    # 3. 查找该主机的首个 pending 任务
+    stmt_task = select(BackupRecord).where(
+        BackupRecord.host_id == host.id,
+        BackupRecord.status == "pending"
+    ).order_by(BackupRecord.id.asc()).limit(1)
+    record = (await db.execute(stmt_task)).scalar_one_or_none()
+    
+    if not record:
+        return None  # 当前无任务
+        
+    # 4. 生成加密凭据并返回
+    db_user_enc = encrypt_text(settings.encryption_key, settings.global_db_user)
+    db_pass_enc = encrypt_text(settings.encryption_key, settings.global_db_password)
+    
+    # 5. 更新任务状态为 running
+    record.status = "running"
+    record.progress_status = "PULLED_BY_AGENT"
+    await db.commit()
+    
+    return schemas.AgentTaskResponse(
+        record_id=record.id,
+        db_port=host.db_port,
+        db_user_enc=db_user_enc,
+        db_pass_enc=db_pass_enc,
+        backup_dir=settings.global_backup_dir,
+        nfs_dir=settings.global_nfs_dir,
+        rsync_bwlimit=settings.global_rsync_bwlimit
+    )
+
+@app.post("/api/agent/report/{record_id}", summary="Agent 上报执行进度与状态")
+async def agent_report_progress(record_id: int, report: schemas.AgentReportRequest, authorization: str = Header(...), db: AsyncSession = Depends(get_db)):
+    """Agent 回调更新备份任务状态接口。"""
+    if not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Invalid token")
+    token = authorization.split("Bearer ")[1]
+    if token != settings.encryption_key:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+        
+    stmt = select(BackupRecord).where(BackupRecord.id == record_id)
+    record = (await db.execute(stmt)).scalar_one_or_none()
+    if not record:
+        raise HTTPException(status_code=404, detail="Record not found")
+        
+    if report.status:
+        record.status = report.status
+    if report.progress_status:
+        record.progress_status = report.progress_status
+    if report.error_message:
+        record.error_message = report.error_message
+    if report.backup_file:
+        record.backup_file = report.backup_file
+    if report.file_size_bytes is not None:
+        record.file_size_bytes = report.file_size_bytes
+        
+    if report.status in ["success", "failed"]:
+        record.end_time = datetime.now()
+        
+    # 顺带更新主机的 Agent 版本号与心跳
+    if report.agent_version:
+        stmt_host = select(HostConfig).where(HostConfig.id == record.host_id)
+        host = (await db.execute(stmt_host)).scalar_one_or_none()
+        if host:
+            host.agent_version = report.agent_version
+            host.last_heartbeat = datetime.now()
+
+    await db.commit()
+    
+    # TODO: 失败可在此触发告警邮件
+    if report.status == "failed" and settings.alarm_script_path:
+        from notifier import send_alarm
+        host_name = "Agent Node"
+        ip = "Unknown IP"
+        # 尝试查询更多信息
+        stmt_h = select(HostConfig).where(HostConfig.id == record.host_id)
+        h = (await db.execute(stmt_h)).scalar_one_or_none()
+        if h:
+            host_name = h.host_name
+            ip = h.ip
+        brief_error = (report.error_message or "Unknown").split("\n")[0]
+        content = f"主机 IP: {ip}\n主机别名: {host_name}\n错误描述: {brief_error}\n\n详细故障堆栈:\n{report.error_message}"
+        asyncio.create_task(send_alarm(ip=ip, title=f"MySQL 备份失败告警: 主机 {host_name}", content=content))
+
+    return {"status": "ok"}
 
 
 # =====================================================================

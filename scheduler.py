@@ -11,7 +11,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from sqlalchemy import select
 
-from backup_executor import run_backup
+# from backup_executor import run_backup
 from config import settings
 from database import AsyncSessionLocal
 from models import HostConfig
@@ -19,6 +19,60 @@ from models import HostConfig
 # 初始化日志
 logger = logging.getLogger("backup_scheduler")
 logger.setLevel(logging.INFO)
+
+async def create_pending_backup_task(host_id: int) -> None:
+    """定时触发时，向数据库中插入一条 pending 状态的任务供 Agent 拉取。"""
+    from datetime import datetime
+    from database import AsyncSessionLocal
+    from models import BackupRecord, HostConfig
+    from zabbix_checker import verify_zabbix_role
+    
+    async with AsyncSessionLocal() as session:
+        # 检查是否有关联的主机
+        stmt = select(HostConfig).where(HostConfig.id == host_id)
+        result = await session.execute(stmt)
+        host = result.scalar_one_or_none()
+        if not host:
+            logger.warning(f"无法为主机 ID {host_id} 创建备份任务，找不到主机。")
+            return
+            
+        # 检查是否已经存在 pending 的任务，防止重复积压
+        stmt_check = select(BackupRecord).where(
+            BackupRecord.host_id == host_id,
+            BackupRecord.status == "pending"
+        )
+        res_check = await session.execute(stmt_check)
+        if res_check.first():
+            logger.warning(f"主机 {host.host_name} (ID: {host_id}) 已有一个 pending 状态的任务，跳过本次调度生成。")
+            return
+            
+        # 进行 Zabbix 主备角色验证门禁
+        try:
+            await verify_zabbix_role(host.ip, host.host_name)
+        except RuntimeError as e:
+            logger.warning(f"主机 {host.host_name} (ID: {host_id}) 的 Zabbix 角色校验未通过，已拦截备份: {str(e)}")
+            record = BackupRecord(
+                host_id=host_id,
+                status="failed",
+                progress_status="ZABBIX_ROLE_REJECTED",
+                error_message=str(e),
+                start_time=datetime.now(),
+                end_time=datetime.now()
+            )
+            session.add(record)
+            await session.commit()
+            return
+
+        # 验证通过，生成正常待拉取的 pending 记录
+        record = BackupRecord(
+            host_id=host_id,
+            status="pending",
+            progress_status="WAITING_FOR_AGENT",
+            start_time=datetime.now()
+        )
+        session.add(record)
+        await session.commit()
+        logger.info(f"为主机 {host.host_name} (ID: {host_id}) 成功生成了 pending 状态的备份任务，等待 Agent 拉取。")
 
 
 class BackupScheduler:
@@ -76,7 +130,7 @@ class BackupScheduler:
             # 解析 cron 表达式
             trigger = CronTrigger.from_crontab(cron_expr)
             self.scheduler.add_job(
-                run_backup,
+                create_pending_backup_task,
                 trigger=trigger,
                 args=[host_id],
                 id=job_id,

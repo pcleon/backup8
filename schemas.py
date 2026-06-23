@@ -13,7 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field
 class HostConfigBase(BaseModel):
     """主机配置基础模式。"""
 
-    host_name: Optional[str] = Field(None, max_length=100, description="主机别名")
+    host_name: str = Field(..., max_length=100, description="主机别名")
     ip: str = Field(..., max_length=50, description="目标主机 IP 地址")
     ssh_port: int = Field(22, ge=1, le=65535, description="SSH 连接端口")
     db_port: int = Field(3306, ge=1, le=65535, description="数据库克隆端口")
@@ -75,4 +75,26 @@ class HostConfigBatchCreate(BaseModel):
     db_port: int = Field(3306, ge=1, le=65535, description="数据库克隆端口")
     cron_expression: str = Field("0 2 * * *", max_length=100, description="备份触发 Cron 表达式")
     is_active: bool = Field(True, description="是否启用自动备份任务")
+
+
+class AgentTaskResponse(BaseModel):
+    """Agent 拉取任务时的响应模式。"""
+    record_id: int
+    db_port: int
+    db_user_enc: str = Field(..., description="加密后的 MySQL 用户名")
+    db_pass_enc: str = Field(..., description="加密后的 MySQL 密码")
+    backup_dir: str
+    nfs_dir: str
+    rsync_bwlimit: str
+
+
+class AgentReportRequest(BaseModel):
+    """Agent 上报进度的请求模式。"""
+    agent_version: Optional[str] = None
+    status: Optional[str] = None
+    progress_status: Optional[str] = None
+    backup_file: Optional[str] = None
+    file_size_bytes: Optional[int] = None
+    error_message: Optional[str] = None
+
 

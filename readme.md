@@ -6,9 +6,10 @@
 
 ## 🌟 功能特性
 
-### 1. 核心物理备份与同步
-- **免 Agent 控制**：管理机通过 SSH 异步通道控制远端目标机，直接通过 MySQL 8.0 CLONE 物理克隆技术进行在线热备份，无需在目标机安装任何 Agent。
-- **打包与双重校验**：克隆完成后自动在目标机执行 **Gzip 最大化压缩 (等级 9)** 并计算 `MD5` 校验码，将文件名重命名为 `{ip}_{hostname}_full_{timestamp}.{md5}.tar.gz` 规范格式（时间戳精度至分，如 `202606221527`）。使用 `rsync` 限制带宽（bwlimit 可配置）同步至挂载的 NFS/GFS 存储，同步后对文件大小及 MD5 执行双重一致性比对。
+### 1. 核心物理备份与同步 (Agent Pull 模式)
+- **Agent Pull 模式**：彻底废弃高危的 SSH 远程执行，采用独立的单文件 Backup Agent 部署在目标机。Agent 每隔 15 秒通过短连接心跳轮询管理端的 HTTP API 获取分配给自己的任务。由于管理端不再需要通向目标机的 SSH 端口及 `sudo` 权限，安全性获得根本性提升。
+- **凭据加密动态下发**：Agent 无需在本地配置文件中存储明文的 MySQL 账号密码。中心管理端在下发备份任务时，会将 MySQL 连接凭据使用 AES 加密下发，Agent 在内存中解密直接调用物理克隆，实现凭证的动态流动与落盘隔离。
+- **打包与双重校验**：克隆完成后自动在目标机执行 **Gzip 最大化压缩 (等级 9)** 并计算 `MD5` 校验码，将文件名重命名为 `{ip}_{hostname}_full_{timestamp}.{md5}.tar.gz` 规范格式。使用 `rsync` 限制带宽同步至本地挂载的 NFS/GFS 存储，同步后对文件大小及 MD5 执行双重一致性比对。
 - **垃圾清理与状态回退**：若克隆、压缩或同步任一阶段失败，系统会自动清除目标机产生的临时物理克隆源目录与压缩包，并将失败原因、故障详细堆栈完整存入管理数据库中。
 
 ### 2. 智能空间估算与历史清理
@@ -88,5 +89,18 @@ pip3 install -r requirements.txt
 alembic upgrade head
 uvicorn main:app --host 0.0.0.0 --port 8000
 ```
-启动后：
-- 在浏览器中访问 `http://<管理机IP>:8000/` 即可直接使用备份管理控制台。
+启动后在浏览器中访问 `http://<管理机IP>:8000/` 即可直接使用备份管理控制台。
+
+### 5. 编译与部署 Backup Agent
+Agent 需要放置在目标 MySQL 服务器运行：
+```bash
+cd agent/
+make build
+```
+编译成功后，将 `dist/backup-agent` 分发到所有目标机，配置并后台运行（例如通过 systemd 管理）：
+```bash
+export API_BASE="http://<管理机IP>:8000"
+export TOKEN="<您在 .env 中的 ENCRYPTION_KEY>"
+export HOSTNAME="<本机的注册别名>"
+./backup-agent
+```

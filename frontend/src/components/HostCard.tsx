@@ -13,7 +13,8 @@ import {
   XCircle, 
   Loader2, 
   HardDrive,
-  X
+  X,
+  Zap
 } from "lucide-react";
 
 interface BackupRecord {
@@ -38,6 +39,8 @@ interface HostCardProps {
     db_port: number;
     cron_expression: string;
     is_active: boolean;
+    last_heartbeat?: string;
+    agent_version?: string;
     latest_record?: BackupRecord;
   };
   onEdit: (host: any) => void;
@@ -57,6 +60,7 @@ export const HostCard: React.FC<HostCardProps> = ({
   const [currentProgress, setCurrentProgress] = useState<string | undefined>(undefined);
   const [latestRecord, setLatestRecord] = useState<BackupRecord | undefined>(host.latest_record);
   const [isAborting, setIsAborting] = useState(false);
+  const [isDeploying, setIsDeploying] = useState(false);
   
   // 弹窗状态管理
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
@@ -214,10 +218,57 @@ export const HostCard: React.FC<HostCardProps> = ({
     }
   };
 
+  // 在历史记录弹窗里单独中止指定的任务
+  const handleAbortHistoryRecord = async (recordId: number) => {
+    if (!confirm(`确定要强行中止该备份任务吗？这会将任务标记为失败。`)) return;
+    
+    try {
+      const response = await fetch(`/api/hosts/${host.id}/records/${recordId}/abort`, {
+        method: "POST"
+      });
+      if (!response.ok) {
+        const errData = await response.json();
+        throw new Error(errData.detail || "中止失败");
+      }
+      
+      // 更新历史记录里的状态，让界面立即反应
+      setHistoryRecords(prev => 
+        prev.map(r => r.id === recordId ? { ...r, status: 'failed', error_message: '备份任务已被管理员手动中止' } : r)
+      );
+      // 刷新外部卡片数据
+      onRefreshData();
+    } catch (err: any) {
+      alert(err.message);
+    }
+  };
+
   // 处理删除确认
   const handleDelete = async () => {
     if (confirm(`确定要彻底删除目标主机配置【${host.host_name}】吗？这会同步注销该主机的自动备份定时任务，并清除所有相关的备份历史记录！`)) {
       await onDelete(host.id);
+    }
+  };
+
+  // 部署 Agent
+  const handleDeployAgent = async () => {
+    if (isDeploying) return;
+    if (!confirm(`将使用系统的全局 SSH 私钥向目标机 ${host.ip} 自动分发、安装并注册 Agent 服务。\n由于已实现免编译纯代码下发，部署将瞬间完成。\n\n是否确认部署？`)) return;
+
+    setIsDeploying(true);
+    try {
+      const response = await fetch(`/api/hosts/${host.id}/deploy`, {
+        method: "POST"
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.detail || "自动化部署发生错误");
+      }
+      alert("✅ " + data.detail);
+      onRefreshData();
+    } catch (err: any) {
+      alert("❌ 部署失败: " + err.message);
+    } finally {
+      setIsDeploying(false);
     }
   };
 
@@ -231,7 +282,18 @@ export const HostCard: React.FC<HostCardProps> = ({
               <span className="px-1.5 py-0.5 rounded-md text-[9px] font-bold uppercase tracking-wider bg-blue-50 border border-blue-200 text-blue-600">
                 {host.host_name.split("-")[0] || "IDC"}
               </span>
-              <span className="truncate max-w-[120px]" title={host.host_name}>{host.host_name}</span>
+              <div className="flex items-center gap-1.5">
+                <span className="truncate max-w-[120px]" title={host.host_name}>{host.host_name}</span>
+                {host.last_heartbeat ? (
+                  (Date.now() - new Date(host.last_heartbeat).getTime() < 3 * 60 * 1000) ? (
+                    <span className="w-2 h-2 rounded-full bg-emerald-500 shadow-[0_0_4px_rgba(16,185,129,0.5)] animate-pulse" title="Agent 在线"></span>
+                  ) : (
+                    <span className="w-2 h-2 rounded-full bg-red-500 shadow-[0_0_4px_rgba(239,68,68,0.5)]" title={`Agent 离线 (最后心跳: ${formatDateTime(host.last_heartbeat)})`}></span>
+                  )
+                ) : (
+                  <span className="w-2 h-2 rounded-full bg-slate-300" title="Agent 状态未知"></span>
+                )}
+              </div>
             </div>
           </td>
           {/* 第二列：IP 与 DB Port */}
@@ -442,8 +504,14 @@ export const HostCard: React.FC<HostCardProps> = ({
 
         {/* 弹窗二：错误日志明细弹窗 */}
         {activeErrorDetail && (
-          <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
-            <div className="w-full max-w-2xl glass-panel rounded-2xl overflow-hidden shadow-2xl border border-slate-200/50 flex flex-col max-h-[75vh]">
+          <div 
+            onClick={() => setActiveErrorDetail(null)}
+            className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs"
+          >
+            <div 
+              onClick={(e) => e.stopPropagation()}
+              className="w-full max-w-2xl glass-panel rounded-2xl overflow-hidden shadow-2xl border border-slate-200/50 flex flex-col max-h-[75vh]"
+            >
               <div className="flex items-center justify-between px-6 py-4 border-b border-red-100 bg-red-50/50">
                 <div className="flex items-center gap-2 text-red-600 font-semibold">
                   <AlertTriangle className="w-5 h-5" />
@@ -486,11 +554,32 @@ export const HostCard: React.FC<HostCardProps> = ({
                 <Server className="w-5 h-5" />
               </div>
               <div>
-                <h4 className="font-semibold text-slate-800 text-base leading-tight">
-                  {host.host_name}
-                </h4>
+                <div className="flex items-center gap-2">
+                  <h4 className="font-semibold text-slate-800 text-base leading-tight">
+                    {host.host_name}
+                  </h4>
+                  {host.last_heartbeat ? (
+                    (Date.now() - new Date(host.last_heartbeat).getTime() < 3 * 60 * 1000) ? (
+                      <span className="flex items-center gap-1 text-[10px] font-bold text-emerald-600 bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded-md">
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                        ONLINE
+                      </span>
+                    ) : (
+                      <span className="flex items-center gap-1 text-[10px] font-bold text-red-600 bg-red-50 border border-red-200 px-1.5 py-0.5 rounded-md" title={`最后心跳: ${formatDateTime(host.last_heartbeat)}`}>
+                        <span className="w-1.5 h-1.5 rounded-full bg-red-500"></span>
+                        OFFLINE
+                      </span>
+                    )
+                  ) : (
+                    <span className="flex items-center gap-1 text-[10px] font-bold text-slate-500 bg-slate-100 border border-slate-200 px-1.5 py-0.5 rounded-md">
+                      <span className="w-1.5 h-1.5 rounded-full bg-slate-400"></span>
+                      UNKNOWN
+                    </span>
+                  )}
+                </div>
                 <p className="text-xs text-slate-500 mt-1 flex items-center gap-1 font-mono">
                   {host.ip}:{host.db_port}
+                  {host.agent_version && <span className="text-[10px] text-slate-400 bg-slate-100 px-1 rounded-sm ml-1">v{host.agent_version}</span>}
                 </p>
               </div>
             </div>
@@ -615,6 +704,15 @@ export const HostCard: React.FC<HostCardProps> = ({
 
           <div className="flex items-center gap-2">
             <button
+              onClick={handleDeployAgent}
+              disabled={isDeploying || isBackingUp}
+              className="px-2.5 py-1.5 rounded text-xs text-indigo-600 border border-indigo-200 hover:bg-indigo-50 transition flex items-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed font-medium"
+              title="自动化推送并注册 Agent"
+            >
+              {isDeploying ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Zap className="w-3.5 h-3.5 fill-current" />}
+              部署 Agent
+            </button>
+            <button
               onClick={handleViewHistory}
               className="px-2.5 py-1.5 rounded text-xs text-slate-600 hover:text-slate-800 bg-white border border-slate-200 hover:border-slate-300 shadow-xs transition flex items-center gap-1"
             >
@@ -718,14 +816,25 @@ export const HostCard: React.FC<HostCardProps> = ({
                         <td className="py-3 px-3 text-xs text-slate-600">{formatDateTime(rec.start_time)}</td>
                         <td className="py-3 px-3 text-xs text-slate-600">{formatDuration(rec.start_time, rec.end_time)}</td>
                         <td className="py-3 px-3 text-right">
-                          {rec.error_message && (
-                            <button
-                              onClick={() => setActiveErrorDetail(rec.error_message || "")}
-                              className="px-2 py-1 bg-red-500/10 hover:bg-red-500/20 text-red-600 border border-red-500/20 hover:border-red-500/30 text-xs rounded-md transition font-medium"
-                            >
-                              查看日志
-                            </button>
-                          )}
+                          <div className="flex justify-end items-center gap-2">
+                            {(rec.status === "pending" || rec.status === "running") && (
+                              <button
+                                onClick={() => handleAbortHistoryRecord(rec.id)}
+                                className="px-2 py-1 bg-red-600 hover:bg-red-500 text-white border border-red-700 text-xs rounded-md transition font-medium shadow-sm flex items-center gap-1"
+                              >
+                                <XCircle className="w-3 h-3" />
+                                中止
+                              </button>
+                            )}
+                            {rec.error_message && (
+                              <button
+                                onClick={() => setActiveErrorDetail(rec.error_message || "")}
+                                className="px-2 py-1 bg-red-500/10 hover:bg-red-500/20 text-red-600 border border-red-500/20 hover:border-red-500/30 text-xs rounded-md transition font-medium"
+                              >
+                                查看日志
+                              </button>
+                            )}
+                          </div>
                         </td>
                       </tr>
                     ))}
@@ -739,8 +848,14 @@ export const HostCard: React.FC<HostCardProps> = ({
 
       {/* 弹窗二：错误日志明细弹窗 */}
       {activeErrorDetail && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
-          <div className="w-full max-w-2xl glass-panel rounded-2xl overflow-hidden shadow-2xl border border-slate-200/50 flex flex-col max-h-[75vh]">
+        <div 
+          onClick={() => setActiveErrorDetail(null)}
+          className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs"
+        >
+          <div 
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-2xl glass-panel rounded-2xl overflow-hidden shadow-2xl border border-slate-200/50 flex flex-col max-h-[75vh]"
+          >
             <div className="flex items-center justify-between px-6 py-4 border-b border-red-100 bg-red-50/50">
               <div className="flex items-center gap-2 text-red-600 font-semibold">
                 <AlertTriangle className="w-5 h-5" />

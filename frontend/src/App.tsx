@@ -1,20 +1,24 @@
 // -*- coding: utf-8 -*-
 import React, { useState, useEffect, useCallback, useMemo } from "react";
-import { 
-  Plus, 
-  RotateCw, 
-  Database, 
-  CheckCircle2, 
-  AlertOctagon, 
+import {
+  Plus,
+  RotateCw,
+  Database,
+  CheckCircle2,
+  AlertOctagon,
   Activity,
   Loader2,
   Grid,
   List,
-  Search
+  Search,
+  Settings,
+  Send
 } from "lucide-react";
 
 import { HostCard } from "./components/HostCard";
 import { HostModal } from "./components/HostModal";
+import { TemplateModal } from "./components/TemplateModal";
+import { BatchDeployModal } from "./components/BatchDeployModal";
 
 interface Host {
   id: number;
@@ -34,6 +38,8 @@ const App: React.FC = () => {
   const [isLoading, setIsLoading] = useState(true);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingHost, setEditingHost] = useState<Host | undefined>(undefined);
+  const [isTemplateModalOpen, setIsTemplateModalOpen] = useState(false);
+  const [isBatchDeployModalOpen, setIsBatchDeployModalOpen] = useState(false);
 
   // 搜索和过滤状态
   const [searchTerm, setSearchTerm] = useState("");
@@ -70,8 +76,8 @@ const App: React.FC = () => {
   // 新增或更新主机配置
   const handleSaveHost = async (payload: any, isBatch: boolean = false) => {
     const isEdit = !!editingHost;
-    const url = isBatch 
-      ? "/api/hosts/batch" 
+    const url = isBatch
+      ? "/api/hosts/batch"
       : (isEdit ? `/api/hosts/${editingHost.id}` : "/api/hosts");
     const method = isBatch ? "POST" : (isEdit ? "PUT" : "POST");
 
@@ -173,19 +179,19 @@ const App: React.FC = () => {
   // 计算全局统计汇总指标（始终基于所有主机）
   const totalHosts = hosts.length;
   const activeSchedulers = hosts.filter(h => h.is_active).length;
-  
+
   // 今日备份的统计
   const successBackups = hosts.filter(h => h.latest_record?.status === "success").length;
   const failedBackups = hosts.filter(h => h.latest_record?.status === "failed").length;
   const runningBackups = hosts.filter(h => h.latest_record?.status === "running").length;
 
-  const successRate = totalHosts > 0 
-    ? Math.round((successBackups / (successBackups + failedBackups || 1)) * 100) 
+  const successRate = totalHosts > 0
+    ? Math.round((successBackups / (successBackups + failedBackups || 1)) * 100)
     : 100;
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
-      
+
       {/* 顶部标题与操作栏 */}
       <header className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-6 border-b border-slate-200">
         <div>
@@ -211,7 +217,23 @@ const App: React.FC = () => {
           >
             <RotateCw className={`w-4 h-4 ${isLoading ? "animate-spin text-blue-600" : ""}`} />
           </button>
-          
+
+          <button
+            onClick={() => setIsTemplateModalOpen(true)}
+            className="p-2.5 rounded-xl text-slate-500 hover:text-indigo-600 bg-white border border-slate-200 hover:border-indigo-200 hover:bg-indigo-50 shadow-xs transition flex items-center justify-center"
+            title="全局模板设置"
+          >
+            <Settings className="w-4 h-4" />
+          </button>
+
+          <button
+            onClick={() => setIsBatchDeployModalOpen(true)}
+            className="p-2.5 rounded-xl text-slate-500 hover:text-indigo-600 bg-white border border-slate-200 hover:border-indigo-200 hover:bg-indigo-50 shadow-xs transition flex items-center justify-center"
+            title="批量重新部署所有 Agent"
+          >
+            <Send className="w-4 h-4" />
+          </button>
+
           <button
             onClick={triggerAddModal}
             className="px-4 py-2.5 rounded-xl text-sm font-semibold text-white bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 shadow-lg shadow-blue-500/20 hover:shadow-blue-500/30 transition flex items-center gap-2"
@@ -258,11 +280,10 @@ const App: React.FC = () => {
               <span className={failedBackups > 0 ? "text-red-600" : "text-slate-400"}>{failedBackups}</span>
             </h3>
           </div>
-          <div className={`p-3 rounded-xl border ${
-            failedBackups > 0 
-              ? "bg-red-500/10 border-red-500/20 text-red-600 animate-pulse" 
+          <div className={`p-3 rounded-xl border ${failedBackups > 0
+              ? "bg-red-500/10 border-red-500/20 text-red-600 animate-pulse"
               : "bg-slate-100 border-slate-200 text-slate-500"
-          }`}>
+            }`}>
             <AlertOctagon className="w-6 h-6" />
           </div>
         </div>
@@ -316,11 +337,10 @@ const App: React.FC = () => {
           <div className="flex items-center gap-1.5 bg-slate-100/85 p-1 rounded-xl">
             <button
               onClick={() => setIdcFilter("all")}
-              className={`px-3 py-1 rounded-lg text-xs font-semibold transition-all ${
-                idcFilter === "all"
+              className={`px-3 py-1 rounded-lg text-xs font-semibold transition-all ${idcFilter === "all"
                   ? "bg-white text-slate-800 shadow-xs"
                   : "text-slate-500 hover:text-slate-700"
-              }`}
+                }`}
             >
               全部机房
               <span className="ml-1 px-1.5 py-0.2 rounded-md text-[10px] bg-slate-200/60 text-slate-600 font-mono">
@@ -331,11 +351,10 @@ const App: React.FC = () => {
               <button
                 key={idc}
                 onClick={() => setIdcFilter(idc)}
-                className={`px-3 py-1 rounded-lg text-xs font-semibold transition-all uppercase ${
-                  idcFilter === idc
+                className={`px-3 py-1 rounded-lg text-xs font-semibold transition-all uppercase ${idcFilter === idc
                     ? "bg-white text-slate-800 shadow-xs border border-slate-200/50"
                     : "text-slate-500 hover:text-slate-700"
-                }`}
+                  }`}
               >
                 {idc}
                 <span className="ml-1 px-1.5 py-0.2 rounded-md text-[10px] bg-slate-200/60 text-slate-600 font-mono">
@@ -349,22 +368,20 @@ const App: React.FC = () => {
           <div className="flex items-center gap-1 bg-slate-100/85 p-1 rounded-xl border border-slate-200/20">
             <button
               onClick={() => setViewMode("grid")}
-              className={`p-1.5 rounded-lg transition-all ${
-                viewMode === "grid"
+              className={`p-1.5 rounded-lg transition-all ${viewMode === "grid"
                   ? "bg-white text-blue-600 shadow-xs"
                   : "text-slate-500 hover:text-slate-700"
-              }`}
+                }`}
               title="网格卡片"
             >
               <Grid className="w-4 h-4" />
             </button>
             <button
               onClick={() => setViewMode("table")}
-              className={`p-1.5 rounded-lg transition-all ${
-                viewMode === "table"
+              className={`p-1.5 rounded-lg transition-all ${viewMode === "table"
                   ? "bg-white text-blue-600 shadow-xs"
                   : "text-slate-500 hover:text-slate-700"
-              }`}
+                }`}
               title="紧凑表格"
             >
               <List className="w-4 h-4" />
@@ -383,7 +400,7 @@ const App: React.FC = () => {
             </span>
           )}
         </div>
-        
+
         {isLoading && hosts.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-24 gap-3 text-slate-500">
             <Loader2 className="w-8 h-8 animate-spin text-blue-600" />
@@ -451,6 +468,17 @@ const App: React.FC = () => {
         onSave={handleSaveHost}
         editHost={editingHost}
       />
+      
+      {isTemplateModalOpen && (
+        <TemplateModal onClose={() => setIsTemplateModalOpen(false)} />
+      )}
+
+      {isBatchDeployModalOpen && (
+        <BatchDeployModal
+          onClose={() => setIsBatchDeployModalOpen(false)}
+          onRefresh={fetchHosts}
+        />
+      )}
     </div>
   );
 };

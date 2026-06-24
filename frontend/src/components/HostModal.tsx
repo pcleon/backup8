@@ -153,9 +153,15 @@ export const HostModal: React.FC<HostModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-xs overflow-y-auto no-scrollbar">
+    <div 
+      onClick={!isSubmitting ? onClose : undefined}
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-xs overflow-y-auto no-scrollbar"
+    >
       {/* 弹窗面板 (浅色毛玻璃) */}
-      <div className="w-full max-w-xl glass-panel rounded-2xl overflow-hidden shadow-2xl border border-slate-200/50 animate-in fade-in zoom-in-95 duration-200 my-8">
+      <div 
+        onClick={(e) => e.stopPropagation()}
+        className="w-full max-w-xl glass-panel rounded-2xl overflow-hidden shadow-2xl border border-slate-200/50 animate-in fade-in zoom-in-95 duration-200 my-8"
+      >
         
         {/* 头部 */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 bg-slate-50/50">

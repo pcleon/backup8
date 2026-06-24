@@ -20,6 +20,49 @@ from models import HostConfig
 logger = logging.getLogger("backup_scheduler")
 logger.setLevel(logging.INFO)
 
+async def cleanup_zombie_tasks() -> None:
+    """后台定时任务：清理过期僵尸任务和去重主机积压任务。"""
+    from datetime import datetime, timedelta
+    from database import AsyncSessionLocal
+    from models import BackupRecord
+    
+    logger.info("开始执行僵尸任务后台清道夫 (Zombie Sweeper)...")
+    async with AsyncSessionLocal() as session:
+        # 获取所有 status in ("pending", "running") 的任务
+        stmt = select(BackupRecord).where(BackupRecord.status.in_(["pending", "running"])).order_by(BackupRecord.host_id, BackupRecord.id.desc())
+        res = await session.execute(stmt)
+        active_records = res.scalars().all()
+        
+        # 按 host_id 分组
+        records_by_host = {}
+        for rec in active_records:
+            records_by_host.setdefault(rec.host_id, []).append(rec)
+            
+        now = datetime.now()
+        for host_id, records in records_by_host.items():
+            # records 已经按 id.desc() 排序，所以 records[0] 是最新创建的
+            # 规则 1：并发积压清理（去重）
+            if len(records) > 1:
+                # 保留最新的，强杀其余的
+                for old_rec in records[1:]:
+                    old_rec.status = "failed"
+                    old_rec.progress_status = "CANCELED_DUPLICATE"
+                    old_rec.error_message = "并发队列积压强制去重清理"
+                    old_rec.end_time = now
+                    logger.info(f"僵尸清道夫: 清理了主机 {host_id} 的重复积压任务 {old_rec.id}")
+            
+            # 规则 2：绝对超时清理（防死锁）
+            latest_rec = records[0]
+            if latest_rec.start_time and (now - latest_rec.start_time) > timedelta(hours=12):
+                latest_rec.status = "failed"
+                latest_rec.progress_status = "TIMEOUT_ZOMBIE"
+                latest_rec.error_message = "执行超时 (超过 12 小时无最终状态)，由系统守护进程自动清理"
+                latest_rec.end_time = now
+                logger.info(f"僵尸清道夫: 清理了主机 {host_id} 的严重超时僵尸任务 {latest_rec.id}")
+                
+        await session.commit()
+    logger.info("僵尸任务后台清道夫执行完毕。")
+
 async def create_pending_backup_task(host_id: int) -> None:
     """定时触发时，向数据库中插入一条 pending 状态的任务供 Agent 拉取。"""
     from datetime import datetime
@@ -36,14 +79,14 @@ async def create_pending_backup_task(host_id: int) -> None:
             logger.warning(f"无法为主机 ID {host_id} 创建备份任务，找不到主机。")
             return
             
-        # 检查是否已经存在 pending 的任务，防止重复积压
+        # 检查是否已经存在 pending 或 running 的任务，防止重复积压
         stmt_check = select(BackupRecord).where(
             BackupRecord.host_id == host_id,
-            BackupRecord.status == "pending"
+            BackupRecord.status.in_(["pending", "running"])
         )
         res_check = await session.execute(stmt_check)
         if res_check.first():
-            logger.warning(f"主机 {host.host_name} (ID: {host_id}) 已有一个 pending 状态的任务，跳过本次调度生成。")
+            logger.warning(f"主机 {host.host_name} (ID: {host_id}) 已有一个处于 pending 或 running 状态的任务，跳过本次调度生成。")
             return
             
         # 进行 Zabbix 主备角色验证门禁
@@ -220,6 +263,19 @@ class BackupScheduler:
         
         # 挂载可选的每日异常汇总邮件任务
         self.add_email_report_job()
+        
+        # 挂载每小时执行一次的僵尸任务清道夫
+        try:
+            self.scheduler.add_job(
+                cleanup_zombie_tasks,
+                trigger=CronTrigger.from_crontab("0 * * * *"),
+                id="zombie_task_sweeper",
+                name="Zombie Task Sweeper",
+                replace_existing=True,
+            )
+            logger.info("成功注册后台僵尸清道夫任务 (Zombie Sweeper)。Cron: '0 * * * *'")
+        except Exception as e:
+            logger.error(f"注册僵尸清道夫任务失败: {e}")
 
 
 # 全局单例调度管理器对象

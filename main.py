@@ -7,11 +7,12 @@
 
 import asyncio
 import os
+import base64
 from datetime import datetime
 import asyncssh
 from contextlib import asynccontextmanager
 from typing import List, Optional
-from fastapi import FastAPI, Depends, HTTPException, status, Header
+from fastapi import FastAPI, Depends, HTTPException, status, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select, func, desc
@@ -22,6 +23,7 @@ from database import async_engine, Base, get_db, AsyncSessionLocal
 from models import HostConfig, BackupRecord
 from scheduler import backup_scheduler
 from zabbix_checker import verify_zabbix_role
+from deploy_agent import deploy_agent_to_host
 import schemas
 
 
@@ -138,12 +140,31 @@ async def list_hosts(db: AsyncSession = Depends(get_db)):
 @app.post("/api/hosts", response_model=schemas.HostConfigResponse, summary="新增主机配置")
 async def create_host(host_in: schemas.HostConfigCreate, db: AsyncSession = Depends(get_db)):
     """向管理库添加一台新的目标数据库服务器，自动建立 SSH 预检连接抓取主机名并保存，同时注册定时备份。"""
-    # 1. 获取目标主机的真实主机名
+    import asyncssh
+
+    # 1. 如果用户未提供主机名，则尝试通过 SSH 自动抓取
     fetched_hostname = host_in.host_name.strip()
+    if not fetched_hostname:
+        try:
+            async with asyncssh.connect(
+                host_in.ip,
+                port=host_in.ssh_port,
+                username=settings.global_ssh_user,
+                client_keys=[settings.global_ssh_key_path],
+                known_hosts=None
+            ) as conn:
+                result = await conn.run('hostname', check=True)
+                fetched_hostname = result.stdout.strip()
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"获取主机名失败，请手动填写。SSH 错误信息: {str(e)}"
+            )
+
     if not fetched_hostname:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="主机别名不可为空"
+            detail="无法获取主机别名，不可为空"
         )
 
     # 2. 查重
@@ -190,9 +211,26 @@ async def batch_create_hosts(batch_in: schemas.HostConfigBatchCreate):
     # 从数据库管理器导入 Session 制造器
     from database import AsyncSessionLocal
 
+    import asyncssh
+
     async def _verify_and_create_single_host(ip_addr: str) -> dict:
-        # 1. 为批量导入的主机生成默认的 hostname
+        # 1. 尝试通过 SSH 登录目标机获取原生 hostname
         fetched_hostname = f"host-{ip_addr.replace('.', '-')}"
+        try:
+            async with asyncssh.connect(
+                ip_addr,
+                port=batch_in.ssh_port,
+                username=settings.global_ssh_user,
+                client_keys=[settings.global_ssh_key_path],
+                known_hosts=None
+            ) as conn:
+                result = await conn.run('hostname', check=True)
+                real_hostname = result.stdout.strip()
+                if real_hostname:
+                    fetched_hostname = real_hostname
+        except Exception as e:
+            # 获取失败则降级使用 IP 生成的别名
+            pass
 
         # 2. 查重并写入数据库 (使用独立的子 Session，保证并发事务隔离)
         try:
@@ -326,18 +364,22 @@ async def trigger_manual_backup(host_id: int, db: AsyncSession = Depends(get_db)
     if not host:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="未找到该主机配置")
 
-    # 2. 页面防抖与并发保护：检查该主机当前是否已有正在运行的备份任务
+    # 2. 页面防抖与并发保护：中止该主机当前所有正在运行或排队的任务
     running_stmt = (
         select(BackupRecord)
         .where(BackupRecord.host_id == host_id)
-        .where(BackupRecord.status == "running")
+        .where(BackupRecord.status.in_(["pending", "running"]))
     )
     running_res = await db.execute(running_stmt)
-    if running_res.scalar_one_or_none():
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="当前该主机已有一个备份任务正在运行中，请勿重复触发！"
-        )
+    active_records = running_res.scalars().all()
+    for active_record in active_records:
+        active_record.status = "failed"
+        active_record.progress_status = "ABORTED_BY_NEW_MANUAL_TRIGGER"
+        active_record.end_time = datetime.now()
+        active_record.error_message = "被新的手动触发任务强制中止"
+    
+    if active_records:
+        await db.commit()
 
     # 3. 执行 Zabbix 角色校验，拦截非备库节点
     try:
@@ -394,14 +436,14 @@ async def abort_backup_record(host_id: int, record_id: int, db: AsyncSession = D
     )
     res = await db.execute(stmt)
     record = res.scalar_one_or_none()
-
+    
     if not record:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="未找到对应的备份记录"
         )
 
-    if record.status != "running":
+    if record.status not in ("running", "pending"):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="该备份任务已结束，无法中止"
@@ -414,6 +456,71 @@ async def abort_backup_record(host_id: int, record_id: int, db: AsyncSession = D
 
     await db.commit()
     return {"status": "success", "detail": f"备份记录 {record_id} 已手动中止。"}
+
+
+@app.post("/api/hosts/{host_id}/deploy", summary="一键自动化部署目标机 Agent")
+async def deploy_host_agent(host_id: int, request: Request, db: AsyncSession = Depends(get_db)):
+    """向目标主机发起一键 Agent 安装部署。"""
+    stmt = select(HostConfig).where(HostConfig.id == host_id)
+    res = await db.execute(stmt)
+    host = res.scalar_one_or_none()
+    if not host:
+        raise HTTPException(status_code=404, detail="未找到该主机配置")
+        
+    try:
+        # 获取当前请求的基础 URL 作为 API_BASE（如果存在反向代理可能需要自行修正）
+        api_base = str(request.base_url).rstrip("/")
+        
+        await deploy_agent_to_host(
+            ip=host.ip,
+            ssh_port=host.ssh_port,
+            host_name=host.host_name,
+            api_base=api_base
+        )
+        return {"status": "success", "detail": "Agent 部署成功且已启动运行！"}
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"部署过程发生未捕获的错误: {str(e)}")
+
+
+@app.post("/api/hosts/batch-deploy", summary="批量自动部署所有有效主机的 Agent")
+async def batch_deploy_agents(request: Request, db: AsyncSession = Depends(get_db)):
+    """并发向所有有效的主机推送最新 Agent。"""
+    stmt = select(HostConfig).where(HostConfig.is_active == True)
+    res = await db.execute(stmt)
+    hosts = res.scalars().all()
+    
+    if not hosts:
+        raise HTTPException(status_code=400, detail="没有找到任何已启用的主机配置")
+
+    api_base = str(request.base_url).rstrip("/")
+    
+    async def _deploy_single(host):
+        try:
+            await deploy_agent_to_host(
+                ip=host.ip,
+                ssh_port=host.ssh_port,
+                host_name=host.host_name,
+                api_base=api_base
+            )
+            return {"host_name": host.host_name, "ip": host.ip, "status": "success"}
+        except Exception as e:
+            return {"host_name": host.host_name, "ip": host.ip, "status": "failed", "reason": str(e)}
+
+    tasks = [_deploy_single(h) for h in hosts]
+    results = await asyncio.gather(*tasks)
+    
+    success_count = sum(1 for r in results if r["status"] == "success")
+    failed_hosts = [r for r in results if r["status"] == "failed"]
+    
+    return {
+        "status": "success",
+        "total": len(hosts),
+        "success_count": success_count,
+        "failed_hosts": failed_hosts,
+        "detail": f"批量部署完成。成功 {success_count} 台，失败 {len(failed_hosts)} 台。"
+    }
 
 
 # =====================================================================
@@ -451,9 +558,9 @@ async def agent_get_task(hostname: str, authorization: str = Header(...), db: As
     if not record:
         return None  # 当前无任务
         
-    # 4. 生成加密凭据并返回
-    db_user_enc = encrypt_text(settings.encryption_key, settings.global_db_user)
-    db_pass_enc = encrypt_text(settings.encryption_key, settings.global_db_password)
+    # 4. 生成 Base64 混淆凭据并返回（防止明文直接暴露在网络嗅探器的基础视线中）
+    db_user_enc = base64.b64encode(settings.global_db_user.encode()).decode()
+    db_pass_enc = base64.b64encode(settings.global_db_password.encode()).decode()
     
     # 5. 更新任务状态为 running
     record.status = "running"
@@ -483,6 +590,10 @@ async def agent_report_progress(record_id: int, report: schemas.AgentReportReque
     record = (await db.execute(stmt)).scalar_one_or_none()
     if not record:
         raise HTTPException(status_code=404, detail="Record not found")
+        
+    # 增加并发死锁保护：如果任务已经被服务端强制中止，忽略 Agent 延迟发来的任何上报
+    if record.progress_status and "ABORT" in record.progress_status.upper():
+        return {"status": "ignored", "detail": "Record already aborted by server"}
         
     if report.status:
         record.status = report.status
@@ -524,6 +635,34 @@ async def agent_report_progress(record_id: int, report: schemas.AgentReportReque
         asyncio.create_task(send_alarm(ip=ip, title=f"MySQL 备份失败告警: 主机 {host_name}", content=content))
 
     return {"status": "ok"}
+
+
+@app.get("/api/settings/template", summary="获取 Agent systemd 部署模板")
+async def get_agent_template():
+    """读取并返回全局的 backup-agent.service 模板内容。"""
+    local_svc = os.path.join("agent", "backup-agent.service")
+    if not os.path.isfile(local_svc):
+        raise HTTPException(status_code=404, detail="系统模板文件不存在")
+    try:
+        with open(local_svc, "r", encoding="utf-8") as f:
+            content = f.read()
+        return {"content": content}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"读取模板失败: {str(e)}")
+
+
+@app.put("/api/settings/template", summary="更新 Agent systemd 部署模板")
+async def update_agent_template(req: schemas.TemplateUpdateRequest):
+    """覆盖更新本地的 backup-agent.service 模板内容。"""
+    local_svc = os.path.join("agent", "backup-agent.service")
+    try:
+        # 确保 agent 目录存在
+        os.makedirs("agent", exist_ok=True)
+        with open(local_svc, "w", encoding="utf-8") as f:
+            f.write(req.content)
+        return {"status": "success", "detail": "模板已成功保存！"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"保存模板失败: {str(e)}")
 
 
 # =====================================================================

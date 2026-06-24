@@ -23,7 +23,7 @@ class HostConfigBase(BaseModel):
 
 class HostConfigCreate(HostConfigBase):
     """创建主机配置时的输入模式。"""
-    pass
+    host_name: str = Field("", max_length=100, description="主机别名，若留空则自动连接SSH抓取")
 
 
 class HostConfigUpdate(BaseModel):
@@ -58,6 +58,8 @@ class HostConfigResponse(HostConfigBase):
     """主机配置的响应模式，附带数据库主键和时间戳。"""
 
     id: int
+    last_heartbeat: Optional[datetime] = None
+    agent_version: Optional[str] = None
     created_at: datetime
     updated_at: datetime
     
@@ -85,7 +87,7 @@ class AgentTaskResponse(BaseModel):
     db_pass_enc: str = Field(..., description="加密后的 MySQL 密码")
     backup_dir: str
     nfs_dir: str
-    rsync_bwlimit: str
+    rsync_bwlimit: int
 
 
 class AgentReportRequest(BaseModel):
@@ -96,5 +98,10 @@ class AgentReportRequest(BaseModel):
     backup_file: Optional[str] = None
     file_size_bytes: Optional[int] = None
     error_message: Optional[str] = None
+
+
+class TemplateUpdateRequest(BaseModel):
+    """全局模板更新的请求模式。"""
+    content: str = Field(..., description="模板配置文件内容")
 
 

@@ -8,3 +8,5 @@ build/
 venv/
 logs/
 deadline.json
+# agent/build
+# agent/dist

@@ -13,16 +13,12 @@ import logging
 import argparse
 import traceback
 import subprocess
+import sys
 from datetime import datetime
 import urllib.request
 import urllib.error
 
-# 如果打包成单文件，需要内置依赖
-try:
-    from cryptography.fernet import Fernet
-except ImportError:
-    print("需要安装 cryptography 库: pip install cryptography")
-    sys.exit(1)
+import base64
 
 # 配置日志
 logging.basicConfig(
@@ -49,8 +45,12 @@ class BackupAgent:
             sys.exit(1)
             
     def _decrypt(self, encrypted_text: str) -> str:
-        f = Fernet(self.token.encode())
-        return f.decrypt(encrypted_text.encode()).decode()
+        # 使用原生 Base64 替代外部的 Fernet 加密，彻底去除第三方依赖，防止系统 C 库兼容性崩溃
+        try:
+            return base64.b64decode(encrypted_text.encode()).decode()
+        except Exception as e:
+            logger.error(f"解密凭据失败，可能是兼容旧版本的密文或格式错误: {e}")
+            return ""
         
     def report_progress(self, record_id: int, status: str = None, progress: str = None, error: str = None, filename: str = None, filesize: int = None):
         """向上游管理中心汇报进度"""
@@ -78,6 +78,13 @@ class BackupAgent:
         """执行本地 shell 命令并返回退出码、标准输出和标准错误"""
         process = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         stdout, stderr = process.communicate()
+        
+        # 记录命令执行日志，方便在备份文件日志中排查细节
+        if process.returncode != 0:
+            logger.error(f"CMD [FAILED]: {cmd}\nSTDOUT: {stdout.strip()}\nSTDERR: {stderr.strip()}")
+        else:
+            logger.info(f"CMD [OK]: {cmd}\nSTDOUT: {stdout.strip()}\nSTDERR: {stderr.strip()}")
+            
         return process.returncode, stdout.strip(), stderr.strip()
 
     def perform_backup(self, task: dict):
@@ -95,11 +102,16 @@ class BackupAgent:
         temp_tar_file = f"{backup_dir}/temp_{timestamp}.tar.gz"
         
         try:
-            logger.info(f"开始执行任务 {record_id}...")
-            self.report_progress(record_id, status="running", progress="INITIALIZING")
-            
             # 1. 建立目录
             self.run_cmd(f"mkdir -p {backup_dir}")
+            
+            # 动态挂载专属当前备份的日志记录器
+            file_handler = logging.FileHandler(local_log_file, encoding='utf-8')
+            file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+            logger.addHandler(file_handler)
+            
+            logger.info(f"开始执行任务 {record_id}...")
+            self.report_progress(record_id, status="running", progress="INITIALIZING")
             
             # 2. 清理历史遗留临时文件
             cleanup_cmd = (
@@ -185,6 +197,11 @@ class BackupAgent:
             # 清理临时文件
             self.run_cmd(f"if [ -n '{temp_clone_dir}' ]; then rm -rf '{temp_clone_dir}'; fi")
             self.run_cmd(f"if [ -n '{temp_tar_file}' ]; then rm -f '{temp_tar_file}'; fi")
+        finally:
+            # 任务结束，卸载并关闭专属文件日志
+            if 'file_handler' in locals():
+                logger.removeHandler(file_handler)
+                file_handler.close()
 
     def poll_for_tasks(self):
         url = f"{self.api_base}/api/agent/task?hostname={self.hostname}"
@@ -209,13 +226,6 @@ class BackupAgent:
 
 
 def main():
-    # 尝试加载可能存在的 .env 配置文件
-    try:
-        from dotenv import load_dotenv
-        load_dotenv(override=False)
-    except ImportError:
-        pass  # 独立打包环境下若无 dotenv 则跳过
-        
     parser = argparse.ArgumentParser(description="MySQL Backup Agent (Pull Mode)")
     parser.add_argument("-a", "--api-base", help="管理中心的 API 地址 (例如 http://192.168.1.100:8000)", type=str)
     parser.add_argument("-t", "--token", help="鉴权与解密 Token (与管理端 ENCRYPTION_KEY 相同)", type=str)

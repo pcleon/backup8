@@ -28,6 +28,7 @@ interface Host {
   db_port: number;
   cron_expression: string;
   is_active: boolean;
+  direct_nfs: boolean;
   created_at: string;
   updated_at: string;
   latest_record?: any;
@@ -109,7 +110,20 @@ const App: React.FC = () => {
         fetchHosts();
       } else {
         const errData = await response.json();
-        alert(errData.detail || "删除失败");
+        const msg = errData.detail || "删除失败";
+        if (response.status === 400 && msg.includes("清理时失败")) {
+          if (window.confirm(`${msg}\n\n该主机可能已经关机或断网。\n是否强制将该主机从本系统中移除（残留的服务后续需手工清理）？`)) {
+            const forceResponse = await fetch(`/api/hosts/${id}?force=true`, { method: "DELETE" });
+            if (forceResponse.ok) {
+              fetchHosts();
+            } else {
+              const forceErr = await forceResponse.json();
+              alert(forceErr.detail || "强制删除失败");
+            }
+          }
+        } else {
+          alert(msg);
+        }
       }
     } catch (e) {
       console.error("删除主机发生异常", e);

@@ -39,7 +39,9 @@ interface HostCardProps {
     db_port: number;
     cron_expression: string;
     is_active: boolean;
+    direct_nfs: boolean;
     last_heartbeat?: string;
+    created_at: string;
     agent_version?: string;
     latest_record?: BackupRecord;
   };
@@ -302,13 +304,20 @@ export const HostCard: React.FC<HostCardProps> = ({
           </td>
           {/* 第三列：自动计划表达式 */}
           <td className="py-3 px-4">
-            <span className={`px-2 py-0.5 rounded-md text-xs ${
-              host.is_active 
-                ? "bg-indigo-50/80 border border-indigo-100 text-indigo-600 font-mono text-[11px]" 
-                : "bg-slate-100 border border-slate-200 text-slate-400"
-            }`}>
-              {host.is_active ? host.cron_expression : "未启用"}
-            </span>
+            <div className="flex flex-col gap-1.5 items-start">
+              <span className={`px-2 py-0.5 rounded-md text-xs ${
+                host.is_active 
+                  ? "bg-indigo-50/80 border border-indigo-100 text-indigo-600 font-mono text-[11px]" 
+                  : "bg-slate-100 border border-slate-200 text-slate-400"
+              }`}>
+                {host.is_active ? host.cron_expression : "未启用"}
+              </span>
+              {host.direct_nfs && (
+                <span className="px-1.5 py-0.5 rounded text-[9px] bg-emerald-50 text-emerald-600 font-bold border border-emerald-200">
+                  NFS直写
+                </span>
+              )}
+            </div>
           </td>
           {/* 第四列：最新备份结果（指示灯与进度） */}
           <td className="py-3 px-4">
@@ -620,6 +629,13 @@ export const HostCard: React.FC<HostCardProps> = ({
                 </span>
               </span>
             </div>
+            {host.direct_nfs && (
+              <div className="flex items-center">
+                <span className="px-1.5 py-0.5 rounded text-[9px] bg-emerald-50 text-emerald-600 font-bold border border-emerald-200">
+                  NFS直写
+                </span>
+              </div>
+            )}
             {latestRecord && (
               <>
                 <div className="flex items-center gap-1.5">

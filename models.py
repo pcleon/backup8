@@ -28,6 +28,7 @@ class HostConfig(Base):
     db_port: Mapped[int] = mapped_column(Integer, nullable=False, default=3306, comment="目标数据库端口")
     cron_expression: Mapped[str] = mapped_column(String(100), nullable=False, default="0 2 * * *", comment="自动备份 Cron 表达式")
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, comment="是否启用定时备份任务")
+    direct_nfs: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, comment="是否启用直写 NFS 模式")
     last_heartbeat: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, comment="Agent 最后心跳时间")
     agent_version: Mapped[Optional[str]] = mapped_column(String(50), nullable=True, comment="Agent 版本号")
     created_at: Mapped[datetime] = mapped_column(

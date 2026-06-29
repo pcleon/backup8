@@ -13,6 +13,7 @@ interface HostModalProps {
     db_port?: number;
     cron_expression?: string;
     is_active?: boolean;
+    direct_nfs?: boolean;
   }; // 如果是编辑状态，传入要编辑的主机数据
 }
 
@@ -36,6 +37,7 @@ export const HostModal: React.FC<HostModalProps> = ({
   const [dbPort, setDbPort] = useState(3306);
   const [cronExpression, setCronExpression] = useState("0 2 * * *");
   const [isActive, setIsActive] = useState(true);
+  const [directNfs, setDirectNfs] = useState(false);
   
   // 运行状态与异常反馈
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -57,6 +59,7 @@ export const HostModal: React.FC<HostModalProps> = ({
       setDbPort(editHost.db_port ?? 3306);
       setCronExpression(editHost.cron_expression || "0 2 * * *");
       setIsActive(editHost.is_active ?? true);
+      setDirectNfs(editHost.direct_nfs ?? false);
     } else {
       setMode("single");
       setIp("");
@@ -65,6 +68,7 @@ export const HostModal: React.FC<HostModalProps> = ({
       setDbPort(3306);
       setCronExpression("0 2 * * *");
       setIsActive(true);
+      setDirectNfs(false);
     }
     setError(null);
     setBatchReport(null);
@@ -99,6 +103,7 @@ export const HostModal: React.FC<HostModalProps> = ({
         db_port: Number(dbPort),
         cron_expression: cronExpression,
         is_active: isActive,
+        direct_nfs: directNfs,
       };
 
       try {
@@ -139,6 +144,7 @@ export const HostModal: React.FC<HostModalProps> = ({
         db_port: Number(dbPort),
         cron_expression: cronExpression,
         is_active: isActive,
+        direct_nfs: directNfs,
       };
 
       try {
@@ -356,6 +362,23 @@ export const HostModal: React.FC<HostModalProps> = ({
                   className="sr-only peer"
                 />
                 <div className="w-11 h-6 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
+              </label>
+            </div>
+
+            {/* 是否直写 NFS */}
+            <div className="col-span-2 flex items-center justify-between p-3 bg-indigo-50/50 rounded-lg border border-indigo-100">
+              <div>
+                <span className="text-sm font-medium text-slate-800">启用直写 NFS 模式</span>
+                <p className="text-[10px] text-slate-500 mt-0.5">开启后，克隆与压缩操作直接将数据写入 NFS 挂载点，零本地磁盘占用，带有断网残留自动清理能力。</p>
+              </div>
+              <label className="relative inline-flex items-center cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={directNfs}
+                  onChange={(e) => setDirectNfs(e.target.checked)}
+                  className="sr-only peer"
+                />
+                <div className="w-11 h-6 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-indigo-600"></div>
               </label>
             </div>
           </div>

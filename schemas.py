@@ -19,6 +19,7 @@ class HostConfigBase(BaseModel):
     db_port: int = Field(3306, ge=1, le=65535, description="数据库克隆端口")
     cron_expression: str = Field("0 2 * * *", max_length=100, description="备份触发 Cron 表达式")
     is_active: bool = Field(True, description="是否启用自动备份任务")
+    direct_nfs: bool = Field(False, description="是否启用直写 NFS 模式")
 
 
 class HostConfigCreate(HostConfigBase):
@@ -35,6 +36,7 @@ class HostConfigUpdate(BaseModel):
     db_port: Optional[int] = Field(None, ge=1, le=65535, description="数据库端口")
     cron_expression: Optional[str] = Field(None, max_length=100, description="Cron 表达式")
     is_active: Optional[bool] = Field(None, description="是否启用")
+    direct_nfs: Optional[bool] = Field(None, description="是否启用直写 NFS 模式")
 
 
 class BackupRecordResponse(BaseModel):
@@ -77,6 +79,7 @@ class HostConfigBatchCreate(BaseModel):
     db_port: int = Field(3306, ge=1, le=65535, description="数据库克隆端口")
     cron_expression: str = Field("0 2 * * *", max_length=100, description="备份触发 Cron 表达式")
     is_active: bool = Field(True, description="是否启用自动备份任务")
+    direct_nfs: bool = Field(False, description="是否启用直写 NFS 模式")
 
 
 class AgentTaskResponse(BaseModel):
@@ -88,6 +91,7 @@ class AgentTaskResponse(BaseModel):
     backup_dir: str
     nfs_dir: str
     rsync_bwlimit: int
+    direct_nfs: bool
 
 
 class AgentReportRequest(BaseModel):

@@ -128,6 +128,7 @@ async def list_hosts(db: AsyncSession = Depends(get_db)):
             "db_port": host.db_port,
             "cron_expression": host.cron_expression,
             "is_active": host.is_active,
+            "direct_nfs": host.direct_nfs,
             "created_at": host.created_at,
             "updated_at": host.updated_at,
             "latest_record": records.get(host.id)  # 装配最新的一条备份状态
@@ -254,7 +255,8 @@ async def batch_create_hosts(batch_in: schemas.HostConfigBatchCreate):
                     ssh_port=batch_in.ssh_port,
                     db_port=batch_in.db_port,
                     cron_expression=batch_in.cron_expression,
-                    is_active=batch_in.is_active
+                    is_active=batch_in.is_active,
+                    direct_nfs=batch_in.direct_nfs
                 )
                 session.add(host_obj)
                 await session.commit()
@@ -320,18 +322,48 @@ async def update_host(host_id: int, host_in: schemas.HostConfigUpdate, db: Async
 
 
 @app.delete("/api/hosts/{host_id}", summary="删除主机配置")
-async def delete_host(host_id: int, db: AsyncSession = Depends(get_db)):
-    """从数据库中删除指定主机配置，并移除对应的定时备份任务及级联删除其历史备份记录。"""
+async def delete_host(host_id: int, force: bool = False, db: AsyncSession = Depends(get_db)):
+    """从数据库中删除指定主机配置，并同步清理目标机上的 Agent Systemd 服务。
+    
+    如果 SSH 连接或清理失败，将抛出 400 错误；
+    前端可通过传递 force=True 参数跳过 SSH 清理，直接从数据库删除（用于死机/断网主机）。
+    """
     stmt = select(HostConfig).where(HostConfig.id == host_id)
     res = await db.execute(stmt)
     host = res.scalar_one_or_none()
     if not host:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="未找到该主机配置")
 
-    # 从调度器中注销作业
+    # 1. SSH 清理 Agent 服务
+    if not force:
+        import asyncssh
+        try:
+            async with asyncssh.connect(
+                host.ip,
+                port=host.ssh_port,
+                username=settings.global_ssh_user,
+                client_keys=[settings.global_ssh_key_path],
+                known_hosts=None
+            ) as conn:
+                # 使用分号连接，即使某些步骤（如服务未启动）报错，也能确保清理后续目录
+                cleanup_cmd = (
+                    "sudo systemctl stop backup-agent.service; "
+                    "sudo systemctl disable backup-agent.service; "
+                    "sudo rm -f /etc/systemd/system/backup-agent.service; "
+                    "sudo systemctl daemon-reload; "
+                    "sudo rm -rf /opt/backup-agent"
+                )
+                await conn.run(cleanup_cmd)
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"连接目标主机进行服务清理时失败: {str(e)}"
+            )
+
+    # 2. 从调度器中注销作业
     backup_scheduler.remove_host_job(host.id)
 
-    # 从数据库中移除主机配置
+    # 3. 从数据库中移除主机配置
     await db.delete(host)
     await db.commit()
 
@@ -574,7 +606,8 @@ async def agent_get_task(hostname: str, authorization: str = Header(...), db: As
         db_pass_enc=db_pass_enc,
         backup_dir=settings.global_backup_dir,
         nfs_dir=settings.global_nfs_dir,
-        rsync_bwlimit=settings.global_rsync_bwlimit
+        rsync_bwlimit=settings.global_rsync_bwlimit,
+        direct_nfs=host.direct_nfs
     )
 
 @app.post("/api/agent/report/{record_id}", summary="Agent 上报执行进度与状态")

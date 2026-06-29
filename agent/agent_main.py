@@ -95,15 +95,36 @@ class BackupAgent:
         backup_dir = task["backup_dir"].rstrip("/")
         nfs_dir = task["nfs_dir"].rstrip("/")
         bwlimit = task.get("rsync_bwlimit", "100000")
+        direct_nfs = task.get("direct_nfs", False)
         
         timestamp = datetime.now().strftime("%Y%m%d%H%M")
+        
+        # 获取本机 IP
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.connect(('8.8.8.8', 1))
+            ip = s.getsockname()[0]
+        except Exception:
+            ip = '127.0.0.1'
+        finally:
+            s.close()
+            
         local_log_file = f"{backup_dir}/backup_{timestamp}.log"
-        temp_clone_dir = f"{backup_dir}/temp_clone_{timestamp}"
-        temp_tar_file = f"{backup_dir}/temp_{timestamp}.tar.gz"
+        machine_nfs_dir = f"{nfs_dir}/{self.hostname}_{ip}"
+        
+        if direct_nfs:
+            temp_clone_dir = f"{machine_nfs_dir}/temp_clone_{timestamp}"
+            temp_tar_file = f"{machine_nfs_dir}/temp_{timestamp}.tar.gz"
+        else:
+            temp_clone_dir = f"{backup_dir}/temp_clone_{timestamp}"
+            temp_tar_file = f"{backup_dir}/temp_{timestamp}.tar.gz"
         
         try:
             # 1. 建立目录
             self.run_cmd(f"mkdir -p {backup_dir}")
+            if direct_nfs:
+                # NFS 直写模式下，建立专属目录并赋权 777 以允许 mysql 写入
+                self.run_cmd(f"mkdir -p {machine_nfs_dir} && chmod 777 {machine_nfs_dir}")
             
             # 动态挂载专属当前备份的日志记录器
             file_handler = logging.FileHandler(local_log_file, encoding='utf-8')
@@ -114,12 +135,20 @@ class BackupAgent:
             self.report_progress(record_id, status="running", progress="INITIALIZING")
             
             # 2. 清理历史遗留临时文件
-            cleanup_cmd = (
-                f"if [ -n '{temp_clone_dir}' ] && [ '{temp_clone_dir}' != '/' ] && [ '{temp_clone_dir}' != ' ' ]; then "
-                f"rm -rf '{temp_clone_dir}'; fi; "
-                f"if [ -n '{temp_tar_file}' ] && [ '{temp_tar_file}' != '/' ] && [ '{temp_tar_file}' != ' ' ]; then "
-                f"rm -f '{temp_tar_file}'; fi"
-            )
+            if direct_nfs:
+                cleanup_cmd = (
+                    f"if [ -d '{machine_nfs_dir}' ]; then "
+                    f"find '{machine_nfs_dir}' -name 'temp_clone_*' -type d -exec rm -rf {{}} +; "
+                    f"find '{machine_nfs_dir}' -name 'temp_*.tar.gz' -type f -exec rm -f {{}} +; "
+                    f"fi"
+                )
+            else:
+                cleanup_cmd = (
+                    f"if [ -n '{temp_clone_dir}' ] && [ '{temp_clone_dir}' != '/' ] && [ '{temp_clone_dir}' != ' ' ]; then "
+                    f"rm -rf '{temp_clone_dir}'; fi; "
+                    f"if [ -n '{temp_tar_file}' ] && [ '{temp_tar_file}' != '/' ] && [ '{temp_tar_file}' != ' ' ]; then "
+                    f"rm -f '{temp_tar_file}'; fi"
+                )
             self.run_cmd(cleanup_cmd)
             
             # 3. 克隆
@@ -136,7 +165,11 @@ class BackupAgent:
             # 4. 压缩
             logger.info("克隆完成，开始进行 Gzip 最大化打包压缩...")
             self.report_progress(record_id, progress="COMPRESSING")
-            tar_cmd = f"tar -czf {temp_tar_file} -C {backup_dir} temp_clone_{timestamp}"
+            if direct_nfs:
+                tar_cmd = f"env GZIP=-9 tar -czf {temp_tar_file} -C {machine_nfs_dir} temp_clone_{timestamp}"
+            else:
+                tar_cmd = f"env GZIP=-9 tar -czf {temp_tar_file} -C {backup_dir} temp_clone_{timestamp}"
+            
             code, out, err = self.run_cmd(tar_cmd)
             if code != 0:
                 raise RuntimeError(f"打包失败: {err}")
@@ -151,40 +184,32 @@ class BackupAgent:
                 raise RuntimeError("计算 MD5 失败")
             md5_val = out.split()[0].strip()
             
-            # {ip}_{hostname}_full_{timestamp}.{md5}.tar.gz
-            # 注意：在 Agent 中，可能需要获取本机 IP。为了简单起见，这里直接使用 "local" 或解析本机的对外 IP，
-            # 不过更稳妥的做法是从 hostname 反查或让控制端下发。为兼容，暂时设为 local_ip。
-            # 为了减少侵入，控制端暂未下发 IP。我们可以动态获取本机 IP。
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            try:
-                s.connect(('8.8.8.8', 1))
-                ip = s.getsockname()[0]
-            except Exception:
-                ip = '127.0.0.1'
-            finally:
-                s.close()
-                
             final_filename = f"{ip}_{self.hostname}_full_{timestamp}.{md5_val}.tar.gz"
-            final_path = f"{backup_dir}/{final_filename}"
+            if direct_nfs:
+                final_path = f"{machine_nfs_dir}/{final_filename}"
+            else:
+                final_path = f"{backup_dir}/{final_filename}"
+            
             self.run_cmd(f"mv {temp_tar_file} {final_path}")
             
             code, out, err = self.run_cmd(f"stat -c%s {final_path}")
             file_size = int(out.strip()) if code == 0 else 0
             
-            # 6. Rsync to NFS
-            logger.info("准备 Rsync 同步至 NFS...")
-            self.report_progress(record_id, progress="RSYNCING")
-            self.run_cmd(f"mkdir -p {nfs_dir}")
-            rsync_cmd = f"rsync -av --bwlimit={bwlimit} {final_path} {nfs_dir}/"
-            code, out, err = self.run_cmd(rsync_cmd)
-            if code != 0:
-                raise RuntimeError(f"Rsync 到 NFS 失败: {err}")
-                
-            # 双重校验
-            nfs_file = f"{nfs_dir}/{final_filename}"
-            code, out, err = self.run_cmd(f"stat -c%s {nfs_file}")
-            if code != 0 or int(out.strip()) != file_size:
-                raise RuntimeError("NFS 双重校验失败，文件大小不一致")
+            # 6. Rsync to NFS (仅在非直写模式下执行)
+            if not direct_nfs:
+                logger.info("准备 Rsync 同步至 NFS...")
+                self.report_progress(record_id, progress="RSYNCING")
+                self.run_cmd(f"mkdir -p {nfs_dir}")
+                rsync_cmd = f"rsync -av --bwlimit={bwlimit} {final_path} {nfs_dir}/"
+                code, out, err = self.run_cmd(rsync_cmd)
+                if code != 0:
+                    raise RuntimeError(f"Rsync 到 NFS 失败: {err}")
+                    
+                # 双重校验
+                nfs_file = f"{nfs_dir}/{final_filename}"
+                code, out, err = self.run_cmd(f"stat -c%s {nfs_file}")
+                if code != 0 or int(out.strip()) != file_size:
+                    raise RuntimeError("NFS 双重校验失败，文件大小不一致")
                 
             # 7. 完成
             logger.info(f"任务 {record_id} 备份成功！")

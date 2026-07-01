@@ -41,6 +41,8 @@ class BackupAgent:
         
         interval_str = poll_interval if poll_interval is not None else os.getenv("POLL_INTERVAL", "15")
         self.poll_interval = int(interval_str)
+        self.active_thread = None
+        self.current_record_id = None
         
         if not self.token:
             logger.error("Token 不能为空。请通过环境变量 TOKEN、命令行参数 -t 或配置文件传入（与管理端的 ENCRYPTION_KEY 保持一致）。")
@@ -133,19 +135,6 @@ class BackupAgent:
         else:
             temp_clone_dir = f"{backup_dir}/temp_clone_{timestamp}"
             temp_tar_file = f"{backup_dir}/temp_{timestamp}.tar.gz"
-        # 启动后台保活心跳线程，防止备份阻塞主线程导致状态 OFFLINE
-        stop_event = threading.Event()
-        def keepalive():
-            while not stop_event.is_set():
-                if stop_event.wait(60):
-                    break
-                try:
-                    self.report_progress(record_id)
-                except Exception as e:
-                    logger.warning(f"后台心跳保活发送失败: {e}")
-                    
-        keepalive_thread = threading.Thread(target=keepalive, daemon=True)
-        keepalive_thread.start()
         
         try:
             # 1. 建立目录
@@ -266,7 +255,6 @@ class BackupAgent:
             self.run_cmd(f"if [ -n '{temp_clone_dir}' ] && [ '{temp_clone_dir}' != '/' ] && [ '{temp_clone_dir}' != ' ' ]; then rm -rf '{temp_clone_dir}'; fi")
             self.run_cmd(f"if [ -n '{temp_tar_file}' ] && [ '{temp_tar_file}' != '/' ] && [ '{temp_tar_file}' != ' ' ]; then rm -f '{temp_tar_file}'; fi")
         finally:
-            stop_event.set()
             # 任务结束，卸载并关闭专属文件日志
             if 'file_handler' in locals():
                 logger.removeHandler(file_handler)
@@ -279,22 +267,35 @@ class BackupAgent:
         }
         
         while True:
-            try:
-                req = urllib.request.Request(url, headers=headers)
-                with urllib.request.urlopen(req, timeout=10) as response:
-                    data = response.read().decode('utf-8')
-                    if data and data != "null":
-                        task = json.loads(data)
-                        self.perform_backup(task)
-            except urllib.error.HTTPError as e:
-                if e.code == 404:
-                    logger.warning(f"轮询被服务器拒绝 (404) - 管理端未找到该主机，请检查启动参数 -n '{self.hostname}' 是否与面板上的主机名完全一致。")
-                elif e.code == 401:
-                    logger.warning(f"轮询被服务器拒绝 (401) - 鉴权失败，请检查启动参数 -t TOKEN 是否正确。")
-                else:
-                    logger.warning(f"轮询被服务器拒绝 (状态码 {e.code})。")
-            except Exception as e:
-                pass # 网络错误时静默，等待下一次轮询
+            # 如果当前有正在执行的备份任务线程，则停止拉取新任务，只发送空心跳保活
+            if self.active_thread and self.active_thread.is_alive():
+                if self.current_record_id:
+                    try:
+                        self.report_progress(self.current_record_id)
+                    except Exception as e:
+                        logger.warning(f"后台心跳保活发送失败: {e}")
+            else:
+                self.active_thread = None
+                self.current_record_id = None
+                try:
+                    req = urllib.request.Request(url, headers=headers)
+                    with urllib.request.urlopen(req, timeout=10) as response:
+                        data = response.read().decode('utf-8')
+                        if data and data != "null":
+                            task = json.loads(data)
+                            self.current_record_id = task.get("record_id")
+                            # 将核心的阻塞备份任务甩给后台线程执行，主循环立刻进入下一轮心跳保活
+                            self.active_thread = threading.Thread(target=self.perform_backup, args=(task,))
+                            self.active_thread.start()
+                except urllib.error.HTTPError as e:
+                    if e.code == 404:
+                        logger.warning(f"轮询被服务器拒绝 (404) - 管理端未找到该主机，请检查启动参数 -n '{self.hostname}' 是否与面板上的主机名完全一致。")
+                    elif e.code == 401:
+                        logger.warning(f"轮询被服务器拒绝 (401) - 鉴权失败，请检查启动参数 -t TOKEN 是否正确。")
+                    else:
+                        logger.warning(f"轮询被服务器拒绝 (状态码 {e.code})。")
+                except Exception as e:
+                    pass # 网络错误时静默，等待下一次轮询
                 
             time.sleep(self.poll_interval)
 

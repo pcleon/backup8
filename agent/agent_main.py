@@ -126,7 +126,6 @@ class BackupAgent:
             s.close()
             
         local_log_file = f"{backup_dir}/backup_{timestamp}.log"
-        machine_nfs_dir = f"{nfs_dir}/{self.hostname}_{ip}"
         temp_nfs_base = f"{os.path.dirname(nfs_dir)}/temp/{self.hostname}_{ip}"
         
         if direct_nfs:
@@ -142,8 +141,8 @@ class BackupAgent:
                 os.makedirs(backup_dir, exist_ok=True)
             if direct_nfs:
                 # NFS 直写模式下，建立最终目录以及专属临时目录，并对临时目录赋权 777 以允许 mysql 写入
-                if not os.path.exists(machine_nfs_dir):
-                    os.makedirs(machine_nfs_dir, exist_ok=True)
+                if not os.path.exists(nfs_dir):
+                    os.makedirs(nfs_dir, exist_ok=True)
                 if not os.path.exists(temp_nfs_base):
                     os.makedirs(temp_nfs_base, exist_ok=True)
                 self.run_cmd(f"chmod 777 '{temp_nfs_base}'")
@@ -195,12 +194,12 @@ class BackupAgent:
                 raise RuntimeError(f"MySQL 克隆失败: {err or out}")
                 
             # 4. 压缩
-            logger.info("克隆完成，开始进行 Gzip 最大化打包压缩...")
+            logger.info("克隆完成，开始进行 Gzip 打包压缩...")
             self.report_progress(record_id, progress="COMPRESSING")
             if direct_nfs:
-                tar_cmd = f"env GZIP=-9 tar --transform=\"s|^temp_clone_{timestamp}|data|\" -czf {temp_tar_file} -C {temp_nfs_base} temp_clone_{timestamp}"
+                tar_cmd = f"tar --transform=\"s|^temp_clone_{timestamp}|data|\" -czf {temp_tar_file} -C {temp_nfs_base} temp_clone_{timestamp}"
             else:
-                tar_cmd = f"env GZIP=-9 tar --transform=\"s|^temp_clone_{timestamp}|data|\" -czf {temp_tar_file} -C {backup_dir} temp_clone_{timestamp}"
+                tar_cmd = f"tar --transform=\"s|^temp_clone_{timestamp}|data|\" -czf {temp_tar_file} -C {backup_dir} temp_clone_{timestamp}"
             
             code, out, err = self.run_cmd(tar_cmd)
             if code != 0:
@@ -218,7 +217,7 @@ class BackupAgent:
             
             final_filename = f"{ip}_{self.hostname}_full_{timestamp}.{md5_val}.tar.gz"
             if direct_nfs:
-                final_path = f"{machine_nfs_dir}/{final_filename}"
+                final_path = f"{nfs_dir}/{final_filename}"
             else:
                 final_path = f"{backup_dir}/{final_filename}"
             

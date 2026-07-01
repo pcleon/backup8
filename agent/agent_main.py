@@ -20,6 +20,7 @@ import urllib.error
 import re
 import base64
 import fcntl
+import threading
 
 # 配置日志
 logging.basicConfig(
@@ -132,6 +133,19 @@ class BackupAgent:
         else:
             temp_clone_dir = f"{backup_dir}/temp_clone_{timestamp}"
             temp_tar_file = f"{backup_dir}/temp_{timestamp}.tar.gz"
+        # 启动后台保活心跳线程，防止备份阻塞主线程导致状态 OFFLINE
+        stop_event = threading.Event()
+        def keepalive():
+            while not stop_event.is_set():
+                if stop_event.wait(60):
+                    break
+                try:
+                    self.report_progress(record_id)
+                except Exception as e:
+                    logger.warning(f"后台心跳保活发送失败: {e}")
+                    
+        keepalive_thread = threading.Thread(target=keepalive, daemon=True)
+        keepalive_thread.start()
         
         try:
             # 1. 建立目录
@@ -252,6 +266,7 @@ class BackupAgent:
             self.run_cmd(f"if [ -n '{temp_clone_dir}' ] && [ '{temp_clone_dir}' != '/' ] && [ '{temp_clone_dir}' != ' ' ]; then rm -rf '{temp_clone_dir}'; fi")
             self.run_cmd(f"if [ -n '{temp_tar_file}' ] && [ '{temp_tar_file}' != '/' ] && [ '{temp_tar_file}' != ' ' ]; then rm -f '{temp_tar_file}'; fi")
         finally:
+            stop_event.set()
             # 任务结束，卸载并关闭专属文件日志
             if 'file_handler' in locals():
                 logger.removeHandler(file_handler)

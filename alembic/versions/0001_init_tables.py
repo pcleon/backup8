@@ -43,7 +43,7 @@ def upgrade() -> None:
         sa.Column("id", sa.Integer(), autoincrement=True, nullable=False, comment="自增主键"),
         sa.Column("host_id", sa.Integer(), nullable=False, comment="关联主机ID"),
         sa.Column("status", sa.String(length=20), nullable=False, server_default="running", comment="备份状态"),
-        sa.Column("progress_status", sa.String(length=200), nullable=True, comment="当前备份的实时步骤进度"),
+        sa.Column("progress_status", sa.String(length=200), nullable=True, comment="实时进度状态 (WAITING_FOR_AGENT, PULLED_BY_AGENT, INITIALIZING, CLONE: RUNNING, COMPRESSING, RSYNCING, COMPLETED, FAILED, ZABBIX_ROLE_REJECTED, CANCELED_DUPLICATE, TIMEOUT_ZOMBIE, ABORTED, ABORTED_BY_NEW_MANUAL_TRIGGER)"),
         sa.Column("start_time", sa.DateTime(), server_default=sa.text("CURRENT_TIMESTAMP"), nullable=False, comment="备份开始时间"),
         sa.Column("end_time", sa.DateTime(), nullable=True, comment="备份结束时间"),
         sa.Column("backup_file", sa.String(length=255), nullable=True, comment="最终生成的备份文件名"),

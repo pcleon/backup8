@@ -67,7 +67,7 @@ class BackupRecord(Base):
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending", index=True, comment="备份状态")
     
     # 实时进度描述：例如 CLONE: FILE COPY (45%) 或 COMPRESSING 或 RSYNCING
-    progress_status: Mapped[str] = mapped_column(String(200), nullable=True, comment="当前备份的实时步骤进度")
+    progress_status: Mapped[str] = mapped_column(String(200), nullable=True, comment="实时进度状态 (WAITING_FOR_AGENT, PULLED_BY_AGENT, INITIALIZING, CLONE: RUNNING, COMPRESSING, RSYNCING, COMPLETED, FAILED, ZABBIX_ROLE_REJECTED, CANCELED_DUPLICATE, TIMEOUT_ZOMBIE, ABORTED, ABORTED_BY_NEW_MANUAL_TRIGGER)")
     
     start_time: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now(), comment="备份开始时间"

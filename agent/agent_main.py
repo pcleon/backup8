@@ -17,7 +17,7 @@ import sys
 from datetime import datetime
 import urllib.request
 import urllib.error
-
+import re
 import base64
 
 # 配置日志
@@ -79,11 +79,16 @@ class BackupAgent:
         process = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
         stdout, stderr = process.communicate()
         
+        # 脱敏处理：将用户名和密码替换为 ****
+        safe_cmd = re.sub(r"-u\S+", "-u****", cmd)
+        safe_cmd = re.sub(r"-p'[^']*'", "-p'****'", safe_cmd)
+        safe_cmd = re.sub(r"-p\S+", "-p****", safe_cmd)
+        
         # 记录命令执行日志，方便在备份文件日志中排查细节
         if process.returncode != 0:
-            logger.error(f"CMD [FAILED]: {cmd}\nSTDOUT: {stdout.strip()}\nSTDERR: {stderr.strip()}")
+            logger.error(f"CMD [FAILED]: {safe_cmd}\nSTDOUT: {stdout.strip()}\nSTDERR: {stderr.strip()}")
         else:
-            logger.info(f"CMD [OK]: {cmd}\nSTDOUT: {stdout.strip()}\nSTDERR: {stderr.strip()}")
+            logger.info(f"CMD [OK]: {safe_cmd}\nSTDOUT: {stdout.strip()}\nSTDERR: {stderr.strip()}")
             
         return process.returncode, stdout.strip(), stderr.strip()
 
@@ -122,10 +127,15 @@ class BackupAgent:
         
         try:
             # 1. 建立目录
-            self.run_cmd(f"mkdir -p {backup_dir}")
+            if not os.path.exists(backup_dir):
+                os.makedirs(backup_dir, exist_ok=True)
             if direct_nfs:
                 # NFS 直写模式下，建立专属目录并赋权 777 以允许 mysql 写入
-                self.run_cmd(f"mkdir -p {machine_nfs_dir} && chmod 777 {machine_nfs_dir}")
+                if not os.path.exists(machine_nfs_dir):
+                    os.makedirs(machine_nfs_dir, exist_ok=True)
+                self.run_cmd(f"chmod 777 '{machine_nfs_dir}'")
+            else:
+                self.run_cmd(f"chmod 777 '{backup_dir}'")
             
             # 动态挂载专属当前备份的日志记录器
             file_handler = logging.FileHandler(local_log_file, encoding='utf-8')

@@ -533,7 +533,7 @@ export const HostCard: React.FC<HostCardProps> = ({
                   <X className="w-5 h-5" />
                 </button>
               </div>
-              <div className="p-6 bg-slate-50 overflow-auto flex-1 font-mono text-xs text-red-700 whitespace-pre-wrap leading-relaxed select-text select-all border-b border-slate-100">
+              <div className="p-6 bg-slate-50 overflow-auto flex-1 font-mono text-xs text-red-700 whitespace-pre-wrap leading-relaxed select-text border-b border-slate-100">
                 {activeErrorDetail}
               </div>
               <div className="px-6 py-3 border-t border-slate-100 text-right bg-slate-50/50">
@@ -884,7 +884,7 @@ export const HostCard: React.FC<HostCardProps> = ({
                 <X className="w-5 h-5" />
               </button>
             </div>
-            <div className="p-6 bg-slate-50 overflow-auto flex-1 font-mono text-xs text-red-700 whitespace-pre-wrap leading-relaxed select-text select-all border-b border-slate-100">
+            <div className="p-6 bg-slate-50 overflow-auto flex-1 font-mono text-xs text-red-700 whitespace-pre-wrap leading-relaxed select-text border-b border-slate-100">
               {activeErrorDetail}
             </div>
             <div className="px-6 py-3 border-t border-slate-100 text-right bg-slate-50/50">

@@ -1,17 +1,17 @@
 // -*- coding: utf-8 -*-
 import React, { useState, useEffect, useCallback } from "react";
-import { 
-  Play, 
-  History, 
-  Edit3, 
-  Trash2, 
-  Server, 
-  Calendar, 
-  Clock, 
-  AlertTriangle, 
-  CheckCircle2, 
-  XCircle, 
-  Loader2, 
+import {
+  Play,
+  History,
+  Edit3,
+  Trash2,
+  Server,
+  Calendar,
+  Clock,
+  AlertTriangle,
+  CheckCircle2,
+  XCircle,
+  Loader2,
   HardDrive,
   X,
   Zap
@@ -63,7 +63,7 @@ export const HostCard: React.FC<HostCardProps> = ({
   const [latestRecord, setLatestRecord] = useState<BackupRecord | undefined>(host.latest_record);
   const [isAborting, setIsAborting] = useState(false);
   const [isDeploying, setIsDeploying] = useState(false);
-  
+
   // 弹窗状态管理
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [historyRecords, setHistoryRecords] = useState<BackupRecord[]>([]);
@@ -108,7 +108,7 @@ export const HostCard: React.FC<HostCardProps> = ({
           const rec = self.latest_record;
           setLatestRecord(rec);
           setCurrentProgress(rec.progress_status);
-          
+
           if (rec.status !== "running") {
             // 备份结束，停止轮询并恢复状态
             setIsBackingUp(false);
@@ -127,7 +127,7 @@ export const HostCard: React.FC<HostCardProps> = ({
   useEffect(() => {
     setLatestRecord(host.latest_record);
     setCurrentProgress(host.latest_record?.progress_status);
-    
+
     let intervalId: any;
     if (host.latest_record?.status === "running") {
       setIsBackingUp(true);
@@ -149,10 +149,10 @@ export const HostCard: React.FC<HostCardProps> = ({
   // 手动触发立即备份
   const handleTriggerBackup = async () => {
     if (isBackingUp) return;
-    
+
     setIsBackingUp(true);
     setCurrentProgress("INITIALIZING");
-    
+
     try {
       const response = await fetch(`/api/hosts/${host.id}/backup`, {
         method: "POST"
@@ -161,7 +161,7 @@ export const HostCard: React.FC<HostCardProps> = ({
         const errData = await response.json();
         throw new Error(errData.detail || "触发手动备份失败");
       }
-      
+
       // 触发成功，启动本地轮询
       const intervalId = setInterval(async () => {
         const isDone = await pollBackupStatus();
@@ -181,7 +181,7 @@ export const HostCard: React.FC<HostCardProps> = ({
     if (isAborting) return;
     if (!latestRecord?.id) return;
     if (!confirm(`确定要强行中止当前主机的备份任务吗？这会将任务标记为失败。`)) return;
-    
+
     setIsAborting(true);
     try {
       const response = await fetch(`/api/hosts/${host.id}/records/${latestRecord.id}/abort`, {
@@ -191,7 +191,7 @@ export const HostCard: React.FC<HostCardProps> = ({
         const errData = await response.json();
         throw new Error(errData.detail || "强行中止备份任务失败");
       }
-      
+
       // 中止成功，更新本地状态
       setIsBackingUp(false);
       setCurrentProgress(undefined);
@@ -223,7 +223,7 @@ export const HostCard: React.FC<HostCardProps> = ({
   // 在历史记录弹窗里单独中止指定的任务
   const handleAbortHistoryRecord = async (recordId: number) => {
     if (!confirm(`确定要强行中止该备份任务吗？这会将任务标记为失败。`)) return;
-    
+
     try {
       const response = await fetch(`/api/hosts/${host.id}/records/${recordId}/abort`, {
         method: "POST"
@@ -232,9 +232,9 @@ export const HostCard: React.FC<HostCardProps> = ({
         const errData = await response.json();
         throw new Error(errData.detail || "中止失败");
       }
-      
+
       // 更新历史记录里的状态，让界面立即反应
-      setHistoryRecords(prev => 
+      setHistoryRecords(prev =>
         prev.map(r => r.id === recordId ? { ...r, status: 'failed', error_message: '备份任务已被管理员手动中止' } : r)
       );
       // 刷新外部卡片数据
@@ -305,11 +305,10 @@ export const HostCard: React.FC<HostCardProps> = ({
           {/* 第三列：自动计划表达式 */}
           <td className="py-3 px-4">
             <div className="flex flex-col gap-1.5 items-start">
-              <span className={`px-2 py-0.5 rounded-md text-xs ${
-                host.is_active 
-                  ? "bg-indigo-50/80 border border-indigo-100 text-indigo-600 font-mono text-[11px]" 
+              <span className={`px-2 py-0.5 rounded-md text-xs ${host.is_active
+                  ? "bg-indigo-50/80 border border-indigo-100 text-indigo-600 font-mono text-[11px]"
                   : "bg-slate-100 border border-slate-200 text-slate-400"
-              }`}>
+                }`}>
                 {host.is_active ? host.cron_expression : "未启用"}
               </span>
               {host.direct_nfs && (
@@ -328,14 +327,13 @@ export const HostCard: React.FC<HostCardProps> = ({
                   {currentProgress || "备份中"}
                 </span>
                 <div className="w-full bg-slate-200 rounded-full h-1 overflow-hidden">
-                  <div 
-                    className={`h-full bg-blue-600 rounded-full transition-all duration-500 ${
-                      currentProgress?.includes("STARTING") ? "w-[10%]" : 
-                      currentProgress?.includes("CLEANING") ? "w-[20%]" :
-                      currentProgress?.includes("CLONE") ? "w-[50%]" :
-                      currentProgress?.includes("COMPRESSING") ? "w-[75%]" :
-                      currentProgress?.includes("RSYNCING") ? "w-[90%]" : "w-[95%]"
-                    }`}
+                  <div
+                    className={`h-full bg-blue-600 rounded-full transition-all duration-500 ${currentProgress?.includes("STARTING") ? "w-[10%]" :
+                        currentProgress?.includes("CLEANING") ? "w-[20%]" :
+                          currentProgress?.includes("CLONE") ? "w-[50%]" :
+                            currentProgress?.includes("COMPRESSING") ? "w-[75%]" :
+                              currentProgress?.includes("RSYNCING") ? "w-[90%]" : "w-[95%]"
+                      }`}
                   />
                 </div>
               </div>
@@ -350,8 +348,8 @@ export const HostCard: React.FC<HostCardProps> = ({
                   <XCircle className="w-3.5 h-3.5 shrink-0" />
                   失败
                 </span>
-                <button 
-                  onClick={() => setActiveErrorDetail(latestRecord.error_message || "")} 
+                <button
+                  onClick={() => setActiveErrorDetail(latestRecord.error_message || "")}
                   className="text-[10px] text-red-500 hover:text-red-700 underline font-medium shrink-0"
                 >
                   日志
@@ -419,11 +417,11 @@ export const HostCard: React.FC<HostCardProps> = ({
 
         {/* 弹窗一：历史备份记录明细列表 */}
         {isHistoryOpen && (
-          <div 
+          <div
             onClick={() => setIsHistoryOpen(false)}
             className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-xs"
           >
-            <div 
+            <div
               onClick={(e) => e.stopPropagation()}
               className="w-full max-w-4xl glass-panel rounded-2xl overflow-hidden shadow-2xl border border-slate-200/50 flex flex-col max-h-[85vh]"
             >
@@ -513,11 +511,11 @@ export const HostCard: React.FC<HostCardProps> = ({
 
         {/* 弹窗二：错误日志明细弹窗 */}
         {activeErrorDetail && (
-          <div 
+          <div
             onClick={() => setActiveErrorDetail(null)}
             className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs"
           >
-            <div 
+            <div
               onClick={(e) => e.stopPropagation()}
               className="w-full max-w-2xl glass-panel rounded-2xl overflow-hidden shadow-2xl border border-slate-200/50 flex flex-col max-h-[75vh]"
             >
@@ -592,7 +590,7 @@ export const HostCard: React.FC<HostCardProps> = ({
                 </p>
               </div>
             </div>
-            
+
             {/* 状态徽章 */}
             <div>
               {isBackingUp ? (
@@ -623,7 +621,7 @@ export const HostCard: React.FC<HostCardProps> = ({
             <div className="flex items-center gap-1.5">
               <Calendar className="w-3.5 h-3.5 text-slate-400" />
               <span>
-                计划: 
+                计划:
                 <span className="ml-1 font-mono px-1.5 py-0.5 rounded bg-slate-50 border border-slate-200/60 text-slate-700">
                   {host.is_active ? host.cron_expression : "未启用"}
                 </span>
@@ -669,14 +667,13 @@ export const HostCard: React.FC<HostCardProps> = ({
                 </span>
               </div>
               <div className="w-full bg-slate-200 rounded-full h-1.5 overflow-hidden">
-                <div 
-                  className={`h-full bg-blue-600 rounded-full transition-all duration-500 ${
-                    currentProgress.includes("STARTING") ? "w-[10%]" : 
-                    currentProgress.includes("CLEANING") ? "w-[20%]" :
-                    currentProgress.includes("CLONE") ? "w-[50%]" :
-                    currentProgress.includes("COMPRESSING") ? "w-[75%]" :
-                    currentProgress.includes("RSYNCING") ? "w-[90%]" : "w-[95%]"
-                  }`}
+                <div
+                  className={`h-full bg-blue-600 rounded-full transition-all duration-500 ${currentProgress.includes("STARTING") ? "w-[10%]" :
+                      currentProgress.includes("CLEANING") ? "w-[20%]" :
+                        currentProgress.includes("CLONE") ? "w-[50%]" :
+                          currentProgress.includes("COMPRESSING") ? "w-[75%]" :
+                            currentProgress.includes("RSYNCING") ? "w-[90%]" : "w-[95%]"
+                    }`}
                 />
               </div>
             </div>
@@ -687,8 +684,8 @@ export const HostCard: React.FC<HostCardProps> = ({
               <div className="truncate flex-1">
                 <span className="font-semibold">错误:</span> {latestRecord.error_message}
               </div>
-              <button 
-                onClick={() => setActiveErrorDetail(latestRecord.error_message || "")} 
+              <button
+                onClick={() => setActiveErrorDetail(latestRecord.error_message || "")}
                 className="underline hover:text-red-700 shrink-0 font-medium"
               >
                 查看
@@ -759,11 +756,11 @@ export const HostCard: React.FC<HostCardProps> = ({
 
       {/* 弹窗一：历史备份记录明细列表 */}
       {isHistoryOpen && (
-        <div 
+        <div
           onClick={() => setIsHistoryOpen(false)}
           className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-xs"
         >
-          <div 
+          <div
             onClick={(e) => e.stopPropagation()}
             className="w-full max-w-4xl glass-panel rounded-2xl overflow-hidden shadow-2xl border border-slate-200/50 flex flex-col max-h-[85vh]"
           >
@@ -864,11 +861,11 @@ export const HostCard: React.FC<HostCardProps> = ({
 
       {/* 弹窗二：错误日志明细弹窗 */}
       {activeErrorDetail && (
-        <div 
+        <div
           onClick={() => setActiveErrorDetail(null)}
           className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs"
         >
-          <div 
+          <div
             onClick={(e) => e.stopPropagation()}
             className="w-full max-w-2xl glass-panel rounded-2xl overflow-hidden shadow-2xl border border-slate-200/50 flex flex-col max-h-[75vh]"
           >

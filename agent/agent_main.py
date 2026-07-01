@@ -117,10 +117,11 @@ class BackupAgent:
             
         local_log_file = f"{backup_dir}/backup_{timestamp}.log"
         machine_nfs_dir = f"{nfs_dir}/{self.hostname}_{ip}"
+        temp_nfs_base = f"{os.path.dirname(nfs_dir)}/temp/{self.hostname}_{ip}"
         
         if direct_nfs:
-            temp_clone_dir = f"{machine_nfs_dir}/temp_clone_{timestamp}"
-            temp_tar_file = f"{machine_nfs_dir}/temp_{timestamp}.tar.gz"
+            temp_clone_dir = f"{temp_nfs_base}/temp_clone_{timestamp}"
+            temp_tar_file = f"{temp_nfs_base}/temp_{timestamp}.tar.gz"
         else:
             temp_clone_dir = f"{backup_dir}/temp_clone_{timestamp}"
             temp_tar_file = f"{backup_dir}/temp_{timestamp}.tar.gz"
@@ -130,10 +131,12 @@ class BackupAgent:
             if not os.path.exists(backup_dir):
                 os.makedirs(backup_dir, exist_ok=True)
             if direct_nfs:
-                # NFS 直写模式下，建立专属目录并赋权 777 以允许 mysql 写入
+                # NFS 直写模式下，建立最终目录以及专属临时目录，并对临时目录赋权 777 以允许 mysql 写入
                 if not os.path.exists(machine_nfs_dir):
                     os.makedirs(machine_nfs_dir, exist_ok=True)
-                self.run_cmd(f"chmod 777 '{machine_nfs_dir}'")
+                if not os.path.exists(temp_nfs_base):
+                    os.makedirs(temp_nfs_base, exist_ok=True)
+                self.run_cmd(f"chmod 777 '{temp_nfs_base}'")
             else:
                 self.run_cmd(f"chmod 777 '{backup_dir}'")
             
@@ -148,9 +151,9 @@ class BackupAgent:
             # 2. 清理历史遗留临时文件
             if direct_nfs:
                 cleanup_cmd = (
-                    f"if [ -d '{machine_nfs_dir}' ]; then "
-                    f"find '{machine_nfs_dir}' -name 'temp_clone_*' -type d -exec rm -rf {{}} +; "
-                    f"find '{machine_nfs_dir}' -name 'temp_*.tar.gz' -type f -exec rm -f {{}} +; "
+                    f"if [ -d '{temp_nfs_base}' ]; then "
+                    f"find '{temp_nfs_base}' -name 'temp_clone_*' -type d -exec rm -rf {{}} +; "
+                    f"find '{temp_nfs_base}' -name 'temp_*.tar.gz' -type f -exec rm -f {{}} +; "
                     f"fi"
                 )
             else:
@@ -177,7 +180,7 @@ class BackupAgent:
             logger.info("克隆完成，开始进行 Gzip 最大化打包压缩...")
             self.report_progress(record_id, progress="COMPRESSING")
             if direct_nfs:
-                tar_cmd = f"env GZIP=-9 tar -czf {temp_tar_file} -C {machine_nfs_dir} temp_clone_{timestamp}"
+                tar_cmd = f"env GZIP=-9 tar -czf {temp_tar_file} -C {temp_nfs_base} temp_clone_{timestamp}"
             else:
                 tar_cmd = f"env GZIP=-9 tar -czf {temp_tar_file} -C {backup_dir} temp_clone_{timestamp}"
             

@@ -79,6 +79,15 @@ import logging
 app.state.logger = logging.getLogger("main")
 app.state.logger.setLevel(logging.INFO)
 
+# 配置独立的审计任务日志记录器
+audit_logger = logging.getLogger("audit")
+audit_logger.setLevel(logging.INFO)
+# 如果还未添加 FileHandler，避免重复添加
+if not audit_logger.handlers:
+    file_handler = logging.FileHandler(settings.audit_log_path, encoding="utf-8")
+    file_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+    audit_logger.addHandler(file_handler)
+
 # 配置跨域请求中间件 (开发阶段前后端分离联调使用)
 app.add_middleware(
     CORSMiddleware,
@@ -129,6 +138,9 @@ async def list_hosts(db: AsyncSession = Depends(get_db)):
             "cron_expression": host.cron_expression,
             "is_active": host.is_active,
             "direct_nfs": host.direct_nfs,
+            "mysql_path": host.mysql_path,
+            "last_heartbeat": host.last_heartbeat,
+            "agent_version": host.agent_version,
             "created_at": host.created_at,
             "updated_at": host.updated_at,
             "latest_record": records.get(host.id)  # 装配最新的一条备份状态
@@ -598,6 +610,10 @@ async def agent_get_task(hostname: str, authorization: str = Header(...), db: As
     record.status = "running"
     record.progress_status = "PULLED_BY_AGENT"
     await db.commit()
+    
+    # 6. 记录任务下发审计日志
+    mode_str = "直写 NFS 模式" if host.direct_nfs else "本地模式"
+    audit_logger.info(f"Task dispatched | Record ID: {record.id} | Host: {hostname} ({host.ip}) | Mode: {mode_str}")
     
     return schemas.AgentTaskResponse(
         record_id=record.id,

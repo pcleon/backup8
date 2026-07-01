@@ -19,6 +19,9 @@ class Settings(BaseSettings):
 
     # 管理数据库连接 URL (使用 SQLAlchemy 异步驱动，如 mysql+aiomysql://user:pass@host:port/dbname)
     management_db_url: str = "mysql+aiomysql://root:root@localhost:3306/auto_backup"
+    
+    # 服务端审计日志路径
+    audit_log_path: str = "server_tasks.log"
 
     # 全局 SSH 配置
     global_ssh_user: str = "backup_user"

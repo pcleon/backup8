@@ -257,7 +257,12 @@ class BackupAgent:
                         task = json.loads(data)
                         self.perform_backup(task)
             except urllib.error.HTTPError as e:
-                logger.warning(f"轮询被服务器拒绝 (状态码 {e.code})，请检查 TOKEN 是否匹配。")
+                if e.code == 404:
+                    logger.warning(f"轮询被服务器拒绝 (404) - 管理端未找到该主机，请检查启动参数 -n '{self.hostname}' 是否与面板上的主机名完全一致。")
+                elif e.code == 401:
+                    logger.warning(f"轮询被服务器拒绝 (401) - 鉴权失败，请检查启动参数 -t TOKEN 是否正确。")
+                else:
+                    logger.warning(f"轮询被服务器拒绝 (状态码 {e.code})。")
             except Exception as e:
                 pass # 网络错误时静默，等待下一次轮询
                 

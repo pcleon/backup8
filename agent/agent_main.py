@@ -19,6 +19,7 @@ import urllib.request
 import urllib.error
 import re
 import base64
+import fcntl
 
 # 配置日志
 logging.basicConfig(
@@ -74,11 +75,17 @@ class BackupAgent:
         except Exception as e:
             logger.warning(f"上报进度失败: {e}")
 
-    def run_cmd(self, cmd: str) -> tuple:
-        """执行本地 shell 命令并返回退出码、标准输出和标准错误"""
+    def run_cmd(self, cmd: str, timeout: int = 43200) -> tuple:
+        """执行本地 shell 命令并返回退出码、标准输出和标准错误（默认 12 小时超时防卡死）"""
         process = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
-        stdout, stderr = process.communicate()
-        
+        try:
+            stdout, stderr = process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            stdout, stderr = process.communicate()
+            stderr = f"{stderr}\n[FATAL] Command execution timed out after {timeout} seconds and was killed."
+            process.returncode = 124
+            
         # 脱敏处理：将用户名和密码替换为 ****
         safe_cmd = re.sub(r"-u\S+", "-u****", cmd)
         safe_cmd = re.sub(r"-p'[^']*'", "-p'****'", safe_cmd)
@@ -149,20 +156,13 @@ class BackupAgent:
             self.report_progress(record_id, status="running", progress="INITIALIZING")
             
             # 2. 清理历史遗留临时文件
-            if direct_nfs:
-                cleanup_cmd = (
-                    f"if [ -d '{temp_nfs_base}' ]; then "
-                    f"find '{temp_nfs_base}' -name 'temp_clone_*' -type d -exec rm -rf {{}} +; "
-                    f"find '{temp_nfs_base}' -name 'temp_*.tar.gz' -type f -exec rm -f {{}} +; "
-                    f"fi"
-                )
-            else:
-                cleanup_cmd = (
-                    f"if [ -n '{temp_clone_dir}' ] && [ '{temp_clone_dir}' != '/' ] && [ '{temp_clone_dir}' != ' ' ]; then "
-                    f"rm -rf '{temp_clone_dir}'; fi; "
-                    f"if [ -n '{temp_tar_file}' ] && [ '{temp_tar_file}' != '/' ] && [ '{temp_tar_file}' != ' ' ]; then "
-                    f"rm -f '{temp_tar_file}'; fi"
-                )
+            target_cleanup_dir = temp_nfs_base if direct_nfs else backup_dir
+            cleanup_cmd = (
+                f"if [ -n '{target_cleanup_dir}' ] && [ '{target_cleanup_dir}' != '/' ] && [ '{target_cleanup_dir}' != ' ' ] && [ -d '{target_cleanup_dir}' ]; then "
+                f"find '{target_cleanup_dir}' -name 'temp_clone_*' -type d -mmin +120 -exec rm -rf {{}} +; "
+                f"find '{target_cleanup_dir}' -name 'temp_*.tar.gz' -type f -mmin +120 -exec rm -f {{}} +; "
+                f"fi"
+            )
             self.run_cmd(cleanup_cmd)
             
             # 3. 克隆
@@ -189,7 +189,7 @@ class BackupAgent:
                 raise RuntimeError(f"打包失败: {err}")
                 
             # 清理克隆源目录
-            self.run_cmd(f"rm -rf '{temp_clone_dir}'")
+            self.run_cmd(f"if [ -n '{temp_clone_dir}' ] && [ '{temp_clone_dir}' != '/' ] && [ '{temp_clone_dir}' != ' ' ]; then rm -rf '{temp_clone_dir}'; fi")
             
             # 5. MD5 与重命名
             logger.info("压缩完成，正在计算 MD5...")
@@ -234,8 +234,8 @@ class BackupAgent:
             logger.error(f"备份失败: {err_msg}")
             self.report_progress(record_id, status="failed", progress="FAILED", error=err_msg)
             # 清理临时文件
-            self.run_cmd(f"if [ -n '{temp_clone_dir}' ]; then rm -rf '{temp_clone_dir}'; fi")
-            self.run_cmd(f"if [ -n '{temp_tar_file}' ]; then rm -f '{temp_tar_file}'; fi")
+            self.run_cmd(f"if [ -n '{temp_clone_dir}' ] && [ '{temp_clone_dir}' != '/' ] && [ '{temp_clone_dir}' != ' ' ]; then rm -rf '{temp_clone_dir}'; fi")
+            self.run_cmd(f"if [ -n '{temp_tar_file}' ] && [ '{temp_tar_file}' != '/' ] && [ '{temp_tar_file}' != ' ' ]; then rm -f '{temp_tar_file}'; fi")
         finally:
             # 任务结束，卸载并关闭专属文件日志
             if 'file_handler' in locals():
@@ -272,6 +272,16 @@ def main():
     parser.add_argument("-i", "--interval", help="轮询任务间隔 (秒)", type=int)
     
     args = parser.parse_args()
+    
+    # 进程单例互斥锁，确保同一个 hostname 的 Agent 在同一台机器上只能运行一个实例
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    lock_file = os.path.join(script_dir, f"autoBackup_agent_{args.hostname}.lock")
+    try:
+        lock_fd = open(lock_file, "w")
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except IOError:
+        logger.error(f"检测到另一个 Hostname 为 {args.hostname} 的 Agent 进程正在运行，本进程自动退出以防并发。")
+        sys.exit(1)
     
     logger.info(f"Backup Agent (Pull Mode) v{AGENT_VERSION} starting...")
     agent = BackupAgent(

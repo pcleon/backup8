@@ -14,6 +14,7 @@ interface HostModalProps {
     cron_expression?: string;
     is_active?: boolean;
     direct_nfs?: boolean;
+    mysql_path?: string;
   }; // 如果是编辑状态，传入要编辑的主机数据
 }
 
@@ -25,24 +26,25 @@ export const HostModal: React.FC<HostModalProps> = ({
 }) => {
   // 单台/批量模式切换 ("single" | "batch")，有编辑数据时强制为 single
   const [mode, setMode] = useState<"single" | "batch">("single");
-  
+
   // 单台表单属性
   const [ip, setIp] = useState("");
-  
+
   // 批量表单属性
   const [ipsText, setIpsText] = useState("");
-  
+
   // 公共模板属性
   const [sshPort, setSshPort] = useState(22);
   const [dbPort, setDbPort] = useState(3306);
   const [cronExpression, setCronExpression] = useState("0 2 * * *");
   const [isActive, setIsActive] = useState(true);
   const [directNfs, setDirectNfs] = useState(false);
-  
+  const [mysqlPath, setMysqlPath] = useState("/data/3306/mysql/bin/mysql");
+
   // 运行状态与异常反馈
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  
+
   // 批量导入的结果汇总报告
   const [batchReport, setBatchReport] = useState<{
     total: number;
@@ -60,6 +62,7 @@ export const HostModal: React.FC<HostModalProps> = ({
       setCronExpression(editHost.cron_expression || "0 2 * * *");
       setIsActive(editHost.is_active ?? true);
       setDirectNfs(editHost.direct_nfs ?? false);
+      setMysqlPath(editHost.mysql_path || "/data/3306/mysql/bin/mysql");
     } else {
       setMode("single");
       setIp("");
@@ -69,6 +72,7 @@ export const HostModal: React.FC<HostModalProps> = ({
       setCronExpression("0 2 * * *");
       setIsActive(true);
       setDirectNfs(false);
+      setMysqlPath("/data/3306/mysql/bin/mysql");
     }
     setError(null);
     setBatchReport(null);
@@ -82,21 +86,21 @@ export const HostModal: React.FC<HostModalProps> = ({
     setBatchReport(null);
 
     const isBatchMode = mode === "batch" && !editHost;
-    
+
     // 输入校验
     if (isBatchMode) {
       const splitIps = ipsText
         .split(/[\n,]+/)
         .map(x => x.trim())
         .filter(x => x.length > 0);
-      
+
       if (splitIps.length === 0) {
         setError("IP 列表不能为空，请每行输入一个 IP 地址。");
         return;
       }
-      
+
       setIsSubmitting(true);
-      
+
       const payload = {
         ips: splitIps,
         ssh_port: Number(sshPort),
@@ -104,20 +108,21 @@ export const HostModal: React.FC<HostModalProps> = ({
         cron_expression: cronExpression,
         is_active: isActive,
         direct_nfs: directNfs,
+        mysql_path: mysqlPath,
       };
 
       try {
         const result = await onSave(payload, true);
-        
+
         // 判定批量结果
         if (result && result.failed_hosts && result.failed_hosts.length > 0) {
           // 有部分机器连接失败，不关闭弹框，渲染报告面板
           setBatchReport(result);
-          
+
           // 智能友好设计：将 textarea 中的内容重置为仅包含那些连接失败的 IP，方便修改后重新提交
           const failedIps = result.failed_hosts.map((x: any) => x.ip).join("\n");
           setIpsText(failedIps);
-          
+
           setError(`部分目标主机验证连接失败，已为您在输入框中保留了失败的 ${result.failed_hosts.length} 台 IP。`);
         } else {
           // 全部成功，关闭弹窗
@@ -128,7 +133,7 @@ export const HostModal: React.FC<HostModalProps> = ({
       } finally {
         setIsSubmitting(false);
       }
-      
+
     } else {
       // 单台模式
       if (!ip.trim()) {
@@ -137,7 +142,7 @@ export const HostModal: React.FC<HostModalProps> = ({
       }
 
       setIsSubmitting(true);
-      
+
       const payload = {
         ip: ip.trim(),
         ssh_port: Number(sshPort),
@@ -145,6 +150,7 @@ export const HostModal: React.FC<HostModalProps> = ({
         cron_expression: cronExpression,
         is_active: isActive,
         direct_nfs: directNfs,
+        mysql_path: mysqlPath,
       };
 
       try {
@@ -159,16 +165,16 @@ export const HostModal: React.FC<HostModalProps> = ({
   };
 
   return (
-    <div 
+    <div
       onClick={!isSubmitting ? onClose : undefined}
       className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-xs overflow-y-auto no-scrollbar"
     >
       {/* 弹窗面板 (浅色毛玻璃) */}
-      <div 
+      <div
         onClick={(e) => e.stopPropagation()}
         className="w-full max-w-xl glass-panel rounded-2xl overflow-hidden shadow-2xl border border-slate-200/50 animate-in fade-in zoom-in-95 duration-200 my-8"
       >
-        
+
         {/* 头部 */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 bg-slate-50/50">
           <div className="flex items-center gap-2">
@@ -191,22 +197,20 @@ export const HostModal: React.FC<HostModalProps> = ({
             <button
               type="button"
               onClick={() => { setMode("single"); setError(null); }}
-              className={`flex-1 py-2 text-sm font-semibold rounded-lg transition ${
-                mode === "single"
+              className={`flex-1 py-2 text-sm font-semibold rounded-lg transition ${mode === "single"
                   ? "bg-white text-blue-600 shadow-xs border border-slate-200/50"
                   : "text-slate-500 hover:text-slate-800"
-              }`}
+                }`}
             >
               单台录入
             </button>
             <button
               type="button"
               onClick={() => { setMode("batch"); setError(null); }}
-              className={`flex-1 py-2 text-sm font-semibold rounded-lg transition ${
-                mode === "batch"
+              className={`flex-1 py-2 text-sm font-semibold rounded-lg transition ${mode === "batch"
                   ? "bg-white text-blue-600 shadow-xs border border-slate-200/50"
                   : "text-slate-500 hover:text-slate-800"
-              }`}
+                }`}
             >
               批量导入
             </button>
@@ -215,13 +219,12 @@ export const HostModal: React.FC<HostModalProps> = ({
 
         {/* 表单内容 */}
         <form onSubmit={handleSubmit} className="p-6 space-y-4">
-          
+
           {error && (
-            <div className={`p-3 text-sm rounded-lg border ${
-              batchReport 
-                ? "text-amber-700 bg-amber-500/10 border-amber-500/20" 
+            <div className={`p-3 text-sm rounded-lg border ${batchReport
+                ? "text-amber-700 bg-amber-500/10 border-amber-500/20"
                 : "text-red-600 bg-red-500/10 border-red-500/20"
-            }`}>
+              }`}>
               {error}
             </div>
           )}
@@ -251,7 +254,7 @@ export const HostModal: React.FC<HostModalProps> = ({
           )}
 
           <div className="grid grid-cols-2 gap-4">
-            
+
             {/* IP地址输入部分 */}
             {mode === "single" ? (
               /* 单台录入 IP */
@@ -345,6 +348,27 @@ export const HostModal: React.FC<HostModalProps> = ({
               </div>
               <p className="mt-1 text-[10px] text-slate-400">
                 标准 5 位 crontab 格式，如 &quot;0 2 * * *&quot; 表示每日凌晨 2:00 自动启动克隆物理备份。
+              </p>
+            </div>
+
+            {/* MySQL 可执行文件路径 */}
+            <div className="col-span-2">
+              <label className="block text-xs font-semibold text-slate-500 uppercase mb-1">
+                MySQL 可执行文件路径 *
+              </label>
+              <div className="relative">
+                <input
+                  type="text"
+                  required
+                  value={mysqlPath}
+                  onChange={(e) => setMysqlPath(e.target.value)}
+                  placeholder="/data/3306/mysql/bin/mysql"
+                  className="w-full pl-9 pr-3 py-2 bg-white border border-slate-200 rounded-lg focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 text-slate-800 text-sm transition"
+                />
+                <Settings className="absolute left-3 top-2.5 w-4 h-4 text-slate-400" />
+              </div>
+              <p className="mt-1 text-[10px] text-slate-400">
+                Agent 所在机器的 mysql 二进制文件完整路径，默认为 /data/3306/mysql/bin/mysql。
               </p>
             </div>
 

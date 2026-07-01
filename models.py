@@ -29,6 +29,7 @@ class HostConfig(Base):
     cron_expression: Mapped[str] = mapped_column(String(100), nullable=False, default="0 2 * * *", comment="自动备份 Cron 表达式")
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, comment="是否启用定时备份任务")
     direct_nfs: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, comment="是否启用直写 NFS 模式")
+    mysql_path: Mapped[str] = mapped_column(String(255), nullable=False, default="/data/3306/mysql/bin/mysql", comment="MySQL可执行文件路径")
     last_heartbeat: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, comment="Agent 最后心跳时间")
     agent_version: Mapped[Optional[str]] = mapped_column(String(50), nullable=True, comment="Agent 版本号")
     created_at: Mapped[datetime] = mapped_column(

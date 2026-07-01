@@ -29,6 +29,7 @@ interface Host {
   cron_expression: string;
   is_active: boolean;
   direct_nfs: boolean;
+  mysql_path: string;
   created_at: string;
   updated_at: string;
   latest_record?: any;

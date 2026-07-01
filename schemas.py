@@ -20,6 +20,7 @@ class HostConfigBase(BaseModel):
     cron_expression: str = Field("0 2 * * *", max_length=100, description="备份触发 Cron 表达式")
     is_active: bool = Field(True, description="是否启用自动备份任务")
     direct_nfs: bool = Field(False, description="是否启用直写 NFS 模式")
+    mysql_path: str = Field("/data/3306/mysql/bin/mysql", max_length=255, description="MySQL可执行文件路径")
 
 
 class HostConfigCreate(HostConfigBase):
@@ -37,6 +38,7 @@ class HostConfigUpdate(BaseModel):
     cron_expression: Optional[str] = Field(None, max_length=100, description="Cron 表达式")
     is_active: Optional[bool] = Field(None, description="是否启用")
     direct_nfs: Optional[bool] = Field(None, description="是否启用直写 NFS 模式")
+    mysql_path: Optional[str] = Field(None, max_length=255, description="MySQL可执行文件路径")
 
 
 class BackupRecordResponse(BaseModel):
@@ -80,6 +82,7 @@ class HostConfigBatchCreate(BaseModel):
     cron_expression: str = Field("0 2 * * *", max_length=100, description="备份触发 Cron 表达式")
     is_active: bool = Field(True, description="是否启用自动备份任务")
     direct_nfs: bool = Field(False, description="是否启用直写 NFS 模式")
+    mysql_path: str = Field("/data/3306/mysql/bin/mysql", max_length=255, description="MySQL可执行文件路径")
 
 
 class AgentTaskResponse(BaseModel):
@@ -92,6 +95,7 @@ class AgentTaskResponse(BaseModel):
     nfs_dir: str
     rsync_bwlimit: int
     direct_nfs: bool
+    mysql_path: str
 
 
 class AgentReportRequest(BaseModel):

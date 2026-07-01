@@ -76,7 +76,7 @@ class BackupAgent:
 
     def run_cmd(self, cmd: str) -> tuple:
         """执行本地 shell 命令并返回退出码、标准输出和标准错误"""
-        process = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        process = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
         stdout, stderr = process.communicate()
         
         # 记录命令执行日志，方便在备份文件日志中排查细节
@@ -96,6 +96,7 @@ class BackupAgent:
         nfs_dir = task["nfs_dir"].rstrip("/")
         bwlimit = task.get("rsync_bwlimit", "100000")
         direct_nfs = task.get("direct_nfs", False)
+        mysql_path = task.get("mysql_path", "mysql")
         
         timestamp = datetime.now().strftime("%Y%m%d%H%M")
         
@@ -155,7 +156,7 @@ class BackupAgent:
             logger.info("启动 MySQL CLONE 物理克隆...")
             self.report_progress(record_id, progress="CLONE: RUNNING")
             clone_sql = (
-                f"mysql -u{db_user} -p'{db_pass}' "
+                f"{mysql_path} -u{db_user} -p'{db_pass}' "
                 f"-h127.0.0.1 -P{db_port} -e \"CLONE LOCAL DATA DIRECTORY = '{temp_clone_dir}';\""
             )
             code, out, err = self.run_cmd(clone_sql)

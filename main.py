@@ -607,7 +607,8 @@ async def agent_get_task(hostname: str, authorization: str = Header(...), db: As
         backup_dir=settings.global_backup_dir,
         nfs_dir=settings.global_nfs_dir,
         rsync_bwlimit=settings.global_rsync_bwlimit,
-        direct_nfs=host.direct_nfs
+        direct_nfs=host.direct_nfs,
+        mysql_path=host.mysql_path
     )
 
 @app.post("/api/agent/report/{record_id}", summary="Agent 上报执行进度与状态")

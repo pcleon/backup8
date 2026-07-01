@@ -164,6 +164,21 @@ class BackupAgent:
                 f"fi"
             )
             self.run_cmd(cleanup_cmd)
+            self.run_cmd(cleanup_cmd)
+            
+            # 2.5 检查只读状态 (安全门禁)
+            logger.info("正在执行前置安全检查：验证数据库是否处于只读模式...")
+            check_sql = (
+                f"{mysql_path} -u{db_user} -p'{db_pass}' "
+                f"-h127.0.0.1 -P{db_port} -sN -e \"SELECT @@read_only;\""
+            )
+            code, out, err = self.run_cmd(check_sql)
+            if code != 0:
+                raise RuntimeError(f"无法查询数据库 read_only 状态: {err or out}")
+            
+            read_only_val = out.strip()
+            if read_only_val != "1":
+                raise RuntimeError(f"严重安全拦截: 目标数据库并非只读模式 (@@read_only={read_only_val})，禁止在此实例上执行物理克隆备份以防主库阻塞！")
             
             # 3. 克隆
             logger.info("启动 MySQL CLONE 物理克隆...")

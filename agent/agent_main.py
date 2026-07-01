@@ -180,9 +180,9 @@ class BackupAgent:
             logger.info("克隆完成，开始进行 Gzip 最大化打包压缩...")
             self.report_progress(record_id, progress="COMPRESSING")
             if direct_nfs:
-                tar_cmd = f"env GZIP=-9 tar -czf {temp_tar_file} -C {temp_nfs_base} temp_clone_{timestamp}"
+                tar_cmd = f"env GZIP=-9 tar --transform=\"s|^temp_clone_{timestamp}|data|\" -czf {temp_tar_file} -C {temp_nfs_base} temp_clone_{timestamp}"
             else:
-                tar_cmd = f"env GZIP=-9 tar -czf {temp_tar_file} -C {backup_dir} temp_clone_{timestamp}"
+                tar_cmd = f"env GZIP=-9 tar --transform=\"s|^temp_clone_{timestamp}|data|\" -czf {temp_tar_file} -C {backup_dir} temp_clone_{timestamp}"
             
             code, out, err = self.run_cmd(tar_cmd)
             if code != 0:

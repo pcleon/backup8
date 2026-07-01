@@ -38,23 +38,7 @@ async def lifespan(app: FastAPI):
     logger.info("正在启动服务...")
     logger.info("请确保在启动服务前已运行 'alembic upgrade head' 以完成数据库迁移和结构同步。")
 
-    # 1. 自动清理状态为 running 的异常残留备份任务
-    try:
-        async with AsyncSessionLocal() as session:
-            stmt = select(BackupRecord).where(BackupRecord.status == "running")
-            res = await session.execute(stmt)
-            running_records = res.scalars().all()
-            if running_records:
-                logger.info(f"检测到有 {len(running_records)} 个未完成的残留备份任务处于运行状态，正在进行清理...")
-                for rec in running_records:
-                    rec.status = "failed"
-                    rec.progress_status = "FAILED"
-                    rec.end_time = datetime.now()
-                    rec.error_message = "备份服务意外重启或中断，导致任务被系统自动中止清理。"
-                await session.commit()
-                logger.info("异常残留备份任务清理完毕。")
-    except Exception as cleanup_ex:
-        logger.error(f"启动时清理残留备份任务失败: {str(cleanup_ex)}")
+
 
     # 2. 定时作业同步并启动调度器
     await backup_scheduler.sync_jobs_from_db()
